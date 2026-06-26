@@ -1,6 +1,6 @@
 anthropic>=0.95.0
 garth>=0.8.0
 garminconnect>=0.3.6
-python-telegram-bot>=20.7
+python-telegram-bot[job-queue]>=20.7
 python-dotenv>=1.0.0
 pytz>=2024.1
