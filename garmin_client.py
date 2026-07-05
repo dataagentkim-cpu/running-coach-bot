@@ -160,6 +160,7 @@ def last_sync_time() -> datetime | None:
 
 
 def _save(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str))
 
 
