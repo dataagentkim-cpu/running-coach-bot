@@ -118,6 +118,13 @@ def build_fitness_context(activities: list[dict], wellness: list[dict]) -> str:
 
 
 def _system_prompt(fitness_ctx: str, mem: dict) -> str:
+    import pytz
+    from datetime import datetime
+    KST = pytz.timezone("Asia/Seoul")
+    now_kst = datetime.now(KST)
+    weekday_kr = ["월", "화", "수", "목", "금", "토", "일"][now_kst.weekday()]
+    today_str = now_kst.strftime(f"%Y년 %m월 %d일 ({weekday_kr}요일)")
+
     goal_str = "없음"
     if mem.get("goal"):
         g = mem["goal"]
@@ -130,6 +137,9 @@ def _system_prompt(fitness_ctx: str, mem: dict) -> str:
         )
 
     return f"""당신은 Jack Daniels VDOT 시스템과 80/20 훈련법에 정통한 전문 러닝 코치입니다.
+
+## 현재 날짜/시간 (KST)
+{today_str}
 
 {fitness_ctx}
 
@@ -184,10 +194,14 @@ class RunningCoach:
 
     def today_workout(self, activities: list[dict], wellness: list[dict]) -> str:
         """오늘 훈련 처방."""
+        import pytz
         from datetime import datetime
-        weekday = ["월", "화", "수", "목", "금", "토", "일"][datetime.now().weekday()]
+        KST = pytz.timezone("Asia/Seoul")
+        now_kst = datetime.now(KST)
+        weekday = ["월", "화", "수", "목", "금", "토", "일"][now_kst.weekday()]
+        date_str = now_kst.strftime(f"%m월 %d일 {weekday}요일")
         return self.chat(
-            f"오늘({weekday}요일) 훈련 처방을 내려줘. 현재 피트니스 상태와 컨디션을 보고 구체적인 워크아웃을 제시해줘.",
+            f"오늘({date_str}) 훈련 처방을 내려줘. 현재 피트니스 상태와 컨디션을 보고 구체적인 워크아웃을 제시해줘.",
             activities,
             wellness,
         )

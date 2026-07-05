@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import logging
 import os
+import pytz
+from datetime import datetime, timedelta
 
 from telegram.ext import CallbackContext
+
+KST = pytz.timezone("Asia/Seoul")
 
 import analytics as an
 from coach import RunningCoach
@@ -104,10 +108,10 @@ async def morning_readiness(context: CallbackContext) -> None:
         log.warning("웰니스 조회 실패: %s", e)
         return
 
-    # 어제 데이터 우선 (오늘 아침엔 어제 밤 데이터가 가장 신선)
-    from datetime import datetime, timedelta
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    today = datetime.now().strftime("%Y-%m-%d")
+    # 어제 데이터 우선 (오늘 아침엔 어제 밤 데이터가 가장 신선) — KST 기준
+    now_kst = datetime.now(KST)
+    yesterday = (now_kst - timedelta(days=1)).strftime("%Y-%m-%d")
+    today = now_kst.strftime("%Y-%m-%d")
     w = today_wellness.get(yesterday) or today_wellness.get(today) or {}
 
     bb = (
@@ -121,7 +125,9 @@ async def morning_readiness(context: CallbackContext) -> None:
 
     score, status, rec = an.readiness_from_wellness(w)
 
-    lines = ["🌅 굿모닝! 오늘 레디니스 체크\n"]
+    weekday_kr = ["월", "화", "수", "목", "금", "토", "일"][now_kst.weekday()]
+    date_str = now_kst.strftime(f"%m월 %d일 ({weekday_kr}요일)")
+    lines = [f"🌅 굿모닝! {date_str} 레디니스 체크\n"]
     if bb:
         lines.append(f"⚡ 바디배터리: {bb}/100")
     if sleep_h > 0:

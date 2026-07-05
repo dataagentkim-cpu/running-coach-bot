@@ -4,6 +4,23 @@ from __future__ import annotations
 import math
 from datetime import datetime, timedelta
 
+import pytz
+KST = pytz.timezone("Asia/Seoul")
+
+
+def _now_kst() -> datetime:
+    return datetime.now(KST)
+
+
+def _ts_to_kst_date(ts) -> str | None:
+    """Garmin beginTimestamp(ms) 또는 startTimeGMT 문자열 → KST 날짜 문자열."""
+    try:
+        if isinstance(ts, (int, float)):
+            return datetime.fromtimestamp(int(ts) / 1000, tz=KST).strftime("%Y-%m-%d")
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).astimezone(KST).strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
 
 # ── VDOT 관련 ────────────────────────────────────────────────────────────────
 
@@ -86,15 +103,18 @@ def daily_load_series(activities: list[dict], days: int = 90) -> list[float]:
     날짜별 일일 훈련 부하 배열 반환 (인덱스 0 = days일 전, -1 = 오늘).
     Garmin activityTrainingLoad 우선, 없으면 TRIMP 추정.
     """
-    today = datetime.now().date()
+    today = _now_kst().date()
     load_map: dict[int, float] = {}  # days_ago → load
 
     for act in activities:
         ts = act.get("beginTimestamp") or act.get("startTimeGMT")
         if not ts:
             continue
+        date_str = _ts_to_kst_date(ts)
+        if not date_str:
+            continue
         try:
-            act_date = datetime.fromtimestamp(int(ts) / 1000).date() if isinstance(ts, (int, float)) else datetime.fromisoformat(str(ts).replace("Z", "")).date()
+            act_date = datetime.strptime(date_str, "%Y-%m-%d").date()
         except Exception:
             continue
         days_ago = (today - act_date).days
@@ -141,7 +161,7 @@ def ctl_atl_tsb(load_series: list[float]) -> tuple[float, float, float]:
 
 def weekly_summary(activities: list[dict], weeks: int = 4) -> list[dict]:
     """최근 N주 주간 통계 반환."""
-    today = datetime.now().date()
+    today = _now_kst().date()
     result = []
     for w in range(weeks):
         week_start = today - timedelta(days=today.weekday() + 7 * w)
@@ -151,12 +171,11 @@ def weekly_summary(activities: list[dict], weeks: int = 4) -> list[dict]:
             ts = act.get("beginTimestamp") or act.get("startTimeGMT")
             if not ts:
                 continue
+            date_str = _ts_to_kst_date(ts)
+            if not date_str:
+                continue
             try:
-                act_date = (
-                    datetime.fromtimestamp(int(ts) / 1000).date()
-                    if isinstance(ts, (int, float))
-                    else datetime.fromisoformat(str(ts).replace("Z", "")).date()
-                )
+                act_date = datetime.strptime(date_str, "%Y-%m-%d").date()
             except Exception:
                 continue
             if week_start <= act_date <= week_end:
@@ -237,14 +256,7 @@ def last_run_summary(activities: list[dict]) -> dict | None:
     pace_sec = dur_sec / dist_km if dist_km else 0
 
     ts = act.get("beginTimestamp") or act.get("startTimeGMT")
-    try:
-        act_date = (
-            datetime.fromtimestamp(int(ts) / 1000).strftime("%Y-%m-%d")
-            if isinstance(ts, (int, float))
-            else str(ts)[:10]
-        )
-    except Exception:
-        act_date = "?"
+    act_date = _ts_to_kst_date(ts) or "?"
 
     return {
         "date": act_date,
