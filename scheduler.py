@@ -55,8 +55,23 @@ async def check_new_runs(context: CallbackContext) -> None:
     if not running:
         return
 
-    seen = load_seen_ids()
-    new_runs = [a for a in running if a.get("activityId") and a["activityId"] not in seen]
+    seen = load_seen_ids()  # 디스크에 저장된 이전 seen 로드
+
+    # 48시간 이내 런이면서 이전에 본 적 없는 것만 "새 런" — 재배포 후 초기화돼도 오래된 런은 무시
+    cutoff_ts = (datetime.now(KST) - timedelta(hours=48)).timestamp() * 1000
+    new_runs = [
+        a for a in running
+        if a.get("activityId")
+        and a["activityId"] not in seen
+        and (a.get("beginTimestamp") or 0) >= cutoff_ts
+    ]
+
+    # 최근 5개 활동 ID를 모두 seen에 등록 (재배포 후에도 중복 알림 방지)
+    for a in running:
+        if a.get("activityId"):
+            seen.add(a["activityId"])
+    save_seen_ids(seen)
+
     if not new_runs:
         return
 
@@ -71,7 +86,6 @@ async def check_new_runs(context: CallbackContext) -> None:
     wellness = load_wellness()
 
     for run in new_runs:
-        seen.add(run["activityId"])
         dist_km = (run.get("distance") or 0) / 1000
         dur_sec = run.get("duration") or run.get("movingDuration") or 0
         avg_hr = run.get("averageHR") or 0
@@ -93,8 +107,6 @@ async def check_new_runs(context: CallbackContext) -> None:
             await _send(context, header + analysis)
         except Exception as e:
             await _send(context, header + f"분석 오류: {e}")
-
-    save_seen_ids(seen)
 
 
 # ── ② 아침 레디니스 알림 (매일 07:00 KST) ────────────────────────────────────
