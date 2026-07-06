@@ -57,6 +57,11 @@ def add_coaching_note(note: str) -> None:
 
 def build_fitness_context(activities: list[dict], wellness: list[dict]) -> str:
     """현재 피트니스 상태를 코치 프롬프트용 텍스트로 변환."""
+    import pytz
+    from datetime import datetime, timedelta
+    KST = pytz.timezone("Asia/Seoul")
+    today_kst = datetime.now(KST).date()
+
     vdot = an.best_vdot_from_activities(activities)
     load_series = an.daily_load_series(activities, days=90)
     ctl, atl, tsb = an.ctl_atl_tsb(load_series)
@@ -75,10 +80,50 @@ def build_fitness_context(activities: list[dict], wellness: list[dict]) -> str:
         f"- 컨디션(TSB = CTL-ATL): {tsb:+.1f} ({'좋음 ✓' if tsb > -10 else '피로 누적 ⚠️' if tsb < -20 else '보통'})",
     ]
 
+    # 이번 주 / 지난 주 실제 일별 러닝 내역 (날짜 혼동 방지)
+    week_start = today_kst - timedelta(days=today_kst.weekday())  # 이번 주 월요일
+    prev_week_start = week_start - timedelta(days=7)
+    weekday_kr = ["월", "화", "수", "목", "금", "토", "일"]
+
+    def _acts_in_range(start, end):
+        result = []
+        for act in activities:
+            ts = act.get("beginTimestamp") or act.get("startTimeGMT")
+            date_str = an._ts_to_kst_date(ts)
+            if not date_str:
+                continue
+            try:
+                d = datetime.strptime(date_str, "%Y-%m-%d").date()
+            except Exception:
+                continue
+            if start <= d <= end:
+                dist_km = (act.get("distance") or 0) / 1000
+                dur_sec = act.get("duration") or act.get("movingDuration") or 0
+                hr = act.get("averageHR") or 0
+                pace_sec = dur_sec / dist_km if dist_km else 0
+                wd = weekday_kr[d.weekday()]
+                result.append(
+                    f"  {d.strftime('%m/%d')}({wd}): {dist_km:.1f}km @ {an.format_pace(pace_sec)}, 심박 {round(hr)}bpm"
+                )
+        return result
+
+    this_week_lines = _acts_in_range(week_start, today_kst)
+    prev_week_lines = _acts_in_range(prev_week_start, week_start - timedelta(days=1))
+
+    lines.append(f"\n## 이번 주 실제 러닝 ({week_start.strftime('%m/%d')}~, 오늘: {today_kst.strftime('%m/%d')} {weekday_kr[today_kst.weekday()]}요일)")
+    if this_week_lines:
+        lines.extend(this_week_lines)
+    else:
+        lines.append("  아직 기록 없음")
+
+    if prev_week_lines:
+        lines.append(f"\n## 지난 주 러닝 ({prev_week_start.strftime('%m/%d')}~{(week_start - timedelta(days=1)).strftime('%m/%d')})")
+        lines.extend(prev_week_lines)
+
     # 최근 4주 요약
     weekly = an.weekly_summary(activities, weeks=4)
     if weekly:
-        lines.append("\n## 최근 주간 훈련량")
+        lines.append("\n## 최근 주간 훈련량 요약")
         for w in weekly:
             lines.append(
                 f"- {w['week']}: {w['runs']}회, {w['total_km']}km, "
@@ -156,6 +201,11 @@ def _system_prompt(fitness_ctx: str, mem: dict) -> str:
 4. 피로(TSB < -20)가 쌓였으면 회복을 우선 처방해라.
 5. 한국어로 친근하고 명확하게 대화해라.
 6. 처방 워크아웃은 목적(E/M/T/I/R)과 함께 제시해라.
+
+## 날짜 규칙 (절대 준수)
+- "이번 주 실제 러닝" 섹션에 있는 날짜만 완료된 훈련으로 표시해라.
+- 오늘({today_str}) 이후 날짜는 계획/처방으로만 표시하고, 절대 완료(✅)로 표시하지 마라.
+- 지난 주 기록을 이번 주 날짜에 옮겨 쓰지 마라.
 """
 
 
