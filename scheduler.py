@@ -23,7 +23,8 @@ def _fetch_weather() -> str:
         f"https://api.open-meteo.com/v1/forecast"
         f"?latitude={_YEOUIDO_LAT}&longitude={_YEOUIDO_LON}"
         f"&current=temperature_2m,apparent_temperature,weathercode,windspeed_10m,precipitation"
-        f"&timezone=Asia%2FSeoul"
+        f"&daily=temperature_2m_max,temperature_2m_min,precipitation_sum"
+        f"&timezone=Asia%2FSeoul&forecast_days=1"
     )
     try:
         with urllib.request.urlopen(url, timeout=5) as resp:
@@ -34,6 +35,11 @@ def _fetch_weather() -> str:
         wind = cur.get("windspeed_10m", "?")
         rain = cur.get("precipitation", 0)
         code = cur.get("weathercode", 0)
+
+        daily = data.get("daily", {})
+        t_max = daily.get("temperature_2m_max", [None])[0]
+        t_min = daily.get("temperature_2m_min", [None])[0]
+        rain_total = daily.get("precipitation_sum", [0])[0] or 0
 
         # WMO 날씨 코드 → 한국어 요약
         if code == 0:
@@ -53,8 +59,9 @@ def _fetch_weather() -> str:
         else:
             desc = f"코드{code}"
 
-        rain_str = f" | 강수 {rain}mm" if rain > 0 else ""
-        return f"🌡 여의도 날씨: {desc} {temp}°C (체감 {feels}°C) | 바람 {wind}km/h{rain_str}"
+        range_str = f" | 최고 {t_max}° / 최저 {t_min}°" if t_max is not None else ""
+        rain_str = f" | 강수 {rain_total}mm" if rain_total > 0 else ""
+        return f"🌡 여의도: {desc} {temp}°C (체감 {feels}°C){range_str} | 바람 {wind}km/h{rain_str}"
     except Exception as e:
         log.warning("날씨 조회 실패: %s", e)
         return ""
