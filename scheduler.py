@@ -24,6 +24,7 @@ def _fetch_weather() -> str:
         f"?latitude={_YEOUIDO_LAT}&longitude={_YEOUIDO_LON}"
         f"&current=temperature_2m,apparent_temperature,weathercode,windspeed_10m,precipitation"
         f"&daily=temperature_2m_max,temperature_2m_min,precipitation_sum"
+        f"&hourly=precipitation,weathercode"
         f"&timezone=Asia%2FSeoul&forecast_days=1"
     )
     try:
@@ -59,9 +60,25 @@ def _fetch_weather() -> str:
         else:
             desc = f"코드{code}"
 
+        # 출근 시간대(7~10시) 강수 여부 확인
+        hourly = data.get("hourly", {})
+        h_times = hourly.get("time", [])
+        h_rain = hourly.get("precipitation", [])
+        h_code = hourly.get("weathercode", [])
+        commute_rain = sum(
+            h_rain[i] for i, t in enumerate(h_times)
+            if "T07" <= t[-5:] <= "T10" and i < len(h_rain)
+        )
+        commute_bad = any(
+            h_code[i] >= 51 for i, t in enumerate(h_times)
+            if "T07" <= t[-5:] <= "T10" and i < len(h_code)
+        )
+        umbrella = "☂️ 우산 챙겨요 (출근길 강수 예보)" if (commute_rain > 0.1 or commute_bad) else "☀️ 우산 불필요"
+
         range_str = f" | 최고 {t_max}° / 최저 {t_min}°" if t_max is not None else ""
         rain_str = f" | 강수 {rain_total}mm" if rain_total > 0 else ""
-        return f"🌡 여의도: {desc} {temp}°C (체감 {feels}°C){range_str} | 바람 {wind}km/h{rain_str}"
+        weather_line = f"🌡 여의도: {desc} {temp}°C (체감 {feels}°C){range_str} | 바람 {wind}km/h{rain_str}"
+        return f"{weather_line}\n{umbrella}"
     except Exception as e:
         log.warning("날씨 조회 실패: %s", e)
         return ""
