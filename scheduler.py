@@ -5,6 +5,7 @@ import logging
 import os
 import urllib.request
 import json as _json
+import time
 import pytz
 from datetime import datetime, timedelta
 
@@ -37,7 +38,7 @@ def _fetch_kospi_futures() -> str:
 
 
 def _fetch_weather() -> str:
-    """Open-Meteo로 여의도 현재 날씨 조회 (API 키 불필요)."""
+    """Open-Meteo로 여의도 현재 날씨 조회 (API 키 불필요). 503 등 일시 오류 시 3회 재시도."""
     url = (
         f"https://api.open-meteo.com/v1/forecast"
         f"?latitude={_YEOUIDO_LAT}&longitude={_YEOUIDO_LON}"
@@ -46,14 +47,25 @@ def _fetch_weather() -> str:
         f"&hourly=precipitation,weathercode"
         f"&timezone=Asia%2FSeoul&forecast_days=1"
     )
+    data = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                data = _json.loads(resp.read())
+            break
+        except Exception as e:
+            if attempt == 2:
+                log.warning("날씨 조회 실패: %s", e)
+                return ""
+            time.sleep(3)
+    if data is None:
+        return ""
+
     try:
-        with urllib.request.urlopen(url, timeout=5) as resp:
-            data = _json.loads(resp.read())
         cur = data["current"]
         temp = cur.get("temperature_2m", "?")
         feels = cur.get("apparent_temperature", "?")
         wind = cur.get("windspeed_10m", "?")
-        rain = cur.get("precipitation", 0)
         code = cur.get("weathercode", 0)
 
         daily = data.get("daily", {})
@@ -61,7 +73,6 @@ def _fetch_weather() -> str:
         t_min = daily.get("temperature_2m_min", [None])[0]
         rain_total = daily.get("precipitation_sum", [0])[0] or 0
 
-        # WMO 날씨 코드 → 한국어 요약
         if code == 0:
             desc = "맑음 ☀️"
         elif code in (1, 2):
@@ -79,7 +90,6 @@ def _fetch_weather() -> str:
         else:
             desc = f"코드{code}"
 
-        # 출근 시간대(7~10시) 강수 여부 확인
         hourly = data.get("hourly", {})
         h_times = hourly.get("time", [])
         h_rain = hourly.get("precipitation", [])
@@ -99,7 +109,7 @@ def _fetch_weather() -> str:
         weather_line = f"🌡 여의도: {desc} {temp}°C (체감 {feels}°C){range_str} | 바람 {wind}km/h{rain_str}"
         return f"{weather_line}\n{umbrella}"
     except Exception as e:
-        log.warning("날씨 조회 실패: %s", e)
+        log.warning("날씨 파싱 실패: %s", e)
         return ""
 
 import analytics as an
