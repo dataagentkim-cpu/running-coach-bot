@@ -67,11 +67,11 @@ def _fetch_weather() -> str:
         h_code = hourly.get("weathercode", [])
         commute_rain = sum(
             h_rain[i] for i, t in enumerate(h_times)
-            if "T07" <= t[-5:] <= "T10" and i < len(h_rain)
+            if "T07" <= t[-5:] <= "T09" and i < len(h_rain)
         )
         commute_bad = any(
             h_code[i] >= 51 for i, t in enumerate(h_times)
-            if "T07" <= t[-5:] <= "T10" and i < len(h_code)
+            if "T07" <= t[-5:] <= "T09" and i < len(h_code)
         )
         umbrella = "☂️ 우산 챙겨요 (출근길 강수 예보)" if (commute_rain > 0.1 or commute_bad) else "☀️ 우산 불필요"
 
