@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import pytz
 from datetime import datetime, timedelta
+KST = pytz.timezone("Asia/Seoul")
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -111,7 +113,7 @@ class GarminClient:
             self.connect()
         result = {}
         for i in range(2):
-            date_str = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+            date_str = (datetime.now(KST) - timedelta(days=i)).strftime("%Y-%m-%d")
             try:
                 stats = self.api.get_stats(date_str) or {}
                 if stats:

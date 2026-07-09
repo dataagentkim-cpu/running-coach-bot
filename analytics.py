@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytz
 KST = pytz.timezone("Asia/Seoul")
@@ -17,7 +17,11 @@ def _ts_to_kst_date(ts) -> str | None:
     try:
         if isinstance(ts, (int, float)):
             return datetime.fromtimestamp(int(ts) / 1000, tz=KST).strftime("%Y-%m-%d")
-        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).astimezone(KST).strftime("%Y-%m-%d")
+        # startTimeGMT는 항상 UTC — 서버 타임존과 무관하게 UTC로 명시 파싱
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(KST).strftime("%Y-%m-%d")
     except Exception:
         return None
 

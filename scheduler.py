@@ -91,6 +91,14 @@ async def check_new_runs(context: CallbackContext) -> None:
         avg_hr = run.get("averageHR") or 0
         pace_sec = dur_sec / dist_km if dist_km else 0
 
+        # 런 실제 날짜·요일 계산 (KST 기준)
+        run_ts = run.get("beginTimestamp") or 0
+        run_dt = datetime.fromtimestamp(run_ts / 1000, tz=KST) if run_ts else datetime.now(KST)
+        run_date_str = run_dt.strftime("%m/%d")
+        run_wd = ["월", "화", "수", "목", "금", "토", "일"][run_dt.weekday()]
+        hours_ago = (datetime.now(KST).timestamp() - run_dt.timestamp()) / 3600
+        time_label = "방금" if hours_ago < 3 else f"{run_date_str}({run_wd})"
+
         header = (
             f"🏃 런 완료! 자동 분석\n\n"
             f"{run.get('activityName', '러닝')} — {dist_km:.2f}km @ {an.format_pace(pace_sec)}\n"
@@ -99,8 +107,8 @@ async def check_new_runs(context: CallbackContext) -> None:
 
         try:
             analysis = _coach.chat(
-                f"방금 {dist_km:.1f}km 런을 {an.format_pace(pace_sec)} 페이스로 완료했어. "
-                f"평균심박 {round(avg_hr)}bpm. 오늘 런 짧게 분석해주고 내일 훈련 한 줄만 처방해줘.",
+                f"{time_label} {run_date_str}({run_wd}) {dist_km:.1f}km 런을 {an.format_pace(pace_sec)} 페이스로 완료했어. "
+                f"평균심박 {round(avg_hr)}bpm. 이 런을 짧게 분석해주고 다음 훈련 한 줄만 처방해줘.",
                 cached,
                 wellness,
             )
