@@ -17,6 +17,25 @@ _YEOUIDO_LAT = 37.5218
 _YEOUIDO_LON = 126.9245
 
 
+def _fetch_kospi_futures() -> str:
+    """코스피200 선물(야간) 시세 조회 — 네이버 폴링 API."""
+    try:
+        url = 'https://polling.finance.naver.com/api/realtime?query=SERVICE_INDEX:KPI200'
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.naver.com/'})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = _json.loads(r.read())
+        d = data['result']['areas'][0]['datas'][0]
+        price = d['nv'] / 100
+        chg = d['cv'] / 100
+        chg_pct = d['cr']
+        arrow = "▲" if d['rf'] == '2' else "▼"
+        sign = "+" if chg >= 0 else ""
+        return f"📈 코스피200 선물: {price:.2f} {arrow}{sign}{chg:.2f} ({sign}{chg_pct:.2f}%)"
+    except Exception as e:
+        log.warning("코스피 선물 조회 실패: %s", e)
+        return ""
+
+
 def _fetch_weather() -> str:
     """Open-Meteo로 여의도 현재 날씨 조회 (API 키 불필요)."""
     url = (
@@ -223,8 +242,12 @@ async def morning_readiness(context: CallbackContext) -> None:
     lines = [f"🌅 굿모닝! {date_str} 레디니스 체크\n"]
 
     weather = _fetch_weather()
+    kospi = _fetch_kospi_futures()
     if weather:
         lines.append(weather)
+    if kospi:
+        lines.append(kospi)
+    if weather or kospi:
         lines.append("")
 
     if bb:
