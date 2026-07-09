@@ -3,12 +3,61 @@ from __future__ import annotations
 
 import logging
 import os
+import urllib.request
+import json as _json
 import pytz
 from datetime import datetime, timedelta
 
 from telegram.ext import CallbackContext
 
 KST = pytz.timezone("Asia/Seoul")
+
+# 여의도 좌표
+_YEOUIDO_LAT = 37.5218
+_YEOUIDO_LON = 126.9245
+
+
+def _fetch_weather() -> str:
+    """Open-Meteo로 여의도 현재 날씨 조회 (API 키 불필요)."""
+    url = (
+        f"https://api.open-meteo.com/v1/forecast"
+        f"?latitude={_YEOUIDO_LAT}&longitude={_YEOUIDO_LON}"
+        f"&current=temperature_2m,apparent_temperature,weathercode,windspeed_10m,precipitation"
+        f"&timezone=Asia%2FSeoul"
+    )
+    try:
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            data = _json.loads(resp.read())
+        cur = data["current"]
+        temp = cur.get("temperature_2m", "?")
+        feels = cur.get("apparent_temperature", "?")
+        wind = cur.get("windspeed_10m", "?")
+        rain = cur.get("precipitation", 0)
+        code = cur.get("weathercode", 0)
+
+        # WMO 날씨 코드 → 한국어 요약
+        if code == 0:
+            desc = "맑음 ☀️"
+        elif code in (1, 2):
+            desc = "구름 조금 🌤"
+        elif code == 3:
+            desc = "흐림 ☁️"
+        elif code in range(51, 68):
+            desc = "비 🌧"
+        elif code in range(71, 78):
+            desc = "눈 🌨"
+        elif code in range(80, 83):
+            desc = "소나기 🌦"
+        elif code in range(95, 100):
+            desc = "뇌우 ⛈"
+        else:
+            desc = f"코드{code}"
+
+        rain_str = f" | 강수 {rain}mm" if rain > 0 else ""
+        return f"🌡 여의도 날씨: {desc} {temp}°C (체감 {feels}°C) | 바람 {wind}km/h{rain_str}"
+    except Exception as e:
+        log.warning("날씨 조회 실패: %s", e)
+        return ""
 
 import analytics as an
 from coach import RunningCoach
@@ -148,6 +197,12 @@ async def morning_readiness(context: CallbackContext) -> None:
     weekday_kr = ["월", "화", "수", "목", "금", "토", "일"][now_kst.weekday()]
     date_str = now_kst.strftime(f"%m월 %d일 ({weekday_kr}요일)")
     lines = [f"🌅 굿모닝! {date_str} 레디니스 체크\n"]
+
+    weather = _fetch_weather()
+    if weather:
+        lines.append(weather)
+        lines.append("")
+
     if bb:
         lines.append(f"⚡ 바디배터리: {bb}/100")
     if sleep_h > 0:
