@@ -13,6 +13,10 @@ from telegram.ext import CallbackContext
 
 KST = pytz.timezone("Asia/Seoul")
 
+# Garmin 로그인 실패 시 재시도 차단 (429 폭격 방지)
+_garmin_blocked_until: float = 0.0
+_GARMIN_BACKOFF_SEC = 1800  # 실패 시 30분 차단
+
 # 여의도 좌표
 _YEOUIDO_LAT = 37.5218
 _YEOUIDO_LON = 126.9245
@@ -142,11 +146,16 @@ async def _send(context: CallbackContext, text: str) -> None:
 
 async def check_new_runs(context: CallbackContext) -> None:
     """새 러닝 활동 감지 → 자동 분석 메시지 발송."""
+    global _garmin_blocked_until
+    if time.time() < _garmin_blocked_until:
+        return  # 차단 중 — 폴링 스킵
     try:
         client = GarminClient()
         recent = client.quick_check(limit=5)
     except Exception as e:
         log.warning("Garmin 폴링 실패: %s", e)
+        _garmin_blocked_until = time.time() + _GARMIN_BACKOFF_SEC
+        log.info("Garmin 재시도 차단 30분")
         return
 
     running = [
@@ -223,12 +232,12 @@ async def check_new_runs(context: CallbackContext) -> None:
 
 async def morning_readiness(context: CallbackContext) -> None:
     """바디배터리·수면 기반 오늘 훈련 강도 제안."""
+    today_wellness = {}
     try:
         client = GarminClient()
         today_wellness = client.sync_wellness_today()
     except Exception as e:
-        log.warning("웰니스 조회 실패: %s", e)
-        return
+        log.warning("웰니스 조회 실패 (Garmin 없이 날씨+코스피만 발송): %s", e)
 
     # 어제 데이터 우선 (오늘 아침엔 어제 밤 데이터가 가장 신선) — KST 기준
     now_kst = datetime.now(KST)
