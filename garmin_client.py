@@ -138,7 +138,30 @@ class GarminClient:
 # ── 로컬 캐시 로드 헬퍼 ──────────────────────────────────────────────────────
 
 def load_activities() -> list[dict]:
-    return _load(DATA_DIR / "activities.json", [])
+    return _apply_overrides(_load(DATA_DIR / "activities.json", []))
+
+
+def _apply_overrides(acts: list[dict]) -> list[dict]:
+    """data/overrides.json의 수동 보정을 읽을 때마다 적용 — Garmin 재동기화 후에도 유지된다.
+
+    형식: {"remove": [activityId, ...], "patch": {"activityId": {필드: 값, ...}}}
+    """
+    ov = _load(DATA_DIR / "overrides.json", {})
+    if not ov:
+        return acts
+
+    remove = {int(i) for i in ov.get("remove", [])}
+    patch = {int(k): v for k, v in ov.get("patch", {}).items()}
+
+    result = []
+    for a in acts:
+        aid = a.get("activityId")
+        if aid in remove:
+            continue
+        if aid in patch:
+            a = {**a, **patch[aid]}
+        result.append(a)
+    return result
 
 
 def load_wellness() -> list[dict]:
