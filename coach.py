@@ -55,12 +55,37 @@ def add_coaching_note(note: str) -> None:
 
 # ── 컨텍스트 빌더 ────────────────────────────────────────────────────────────
 
+def _zone_summary(zones: list[dict]) -> str:
+    """심박존 체류 시간 → 'Z3 7.8분 · Z4 33.9분 → 고강도 82%' 형태.
+
+    평균 페이스가 뭉개는 인터벌 자극을 드러내려는 목적이다.
+    """
+    total = sum(z.get("secsInZone") or 0 for z in zones)
+    if total <= 0:
+        return ""
+
+    parts = [
+        f"Z{z.get('zoneNumber')} {(z.get('secsInZone') or 0) / 60:.1f}분"
+        for z in zones
+        if (z.get("secsInZone") or 0) >= 30  # 30초 미만은 노이즈
+    ]
+    if not parts:
+        return ""
+
+    hard = sum(
+        z.get("secsInZone") or 0 for z in zones if (z.get("zoneNumber") or 0) >= 4
+    )
+    return " · ".join(parts) + f" → 고강도 {hard / total * 100:.0f}%"
+
+
 def build_fitness_context(activities: list[dict], wellness: list[dict]) -> str:
     """현재 피트니스 상태를 코치 프롬프트용 텍스트로 변환."""
     import pytz
     from datetime import datetime, timedelta
+    from garmin_client import load_hr_zones
     KST = pytz.timezone("Asia/Seoul")
     today_kst = datetime.now(KST).date()
+    hr_zones = load_hr_zones()
 
     vdot = an.best_vdot_from_activities(activities)
     load_series = an.daily_load_series(activities, days=90)
@@ -105,6 +130,9 @@ def build_fitness_context(activities: list[dict], wellness: list[dict]) -> str:
                 result.append(
                     f"  {d.strftime('%m/%d')}({wd}): {dist_km:.1f}km @ {an.format_pace(pace_sec)}, 심박 {round(hr)}bpm"
                 )
+                zsum = _zone_summary(hr_zones.get(str(act.get("activityId")), []))
+                if zsum:
+                    result.append(f"    └ {zsum}")
         return result
 
     this_week_lines = _acts_in_range(week_start, today_kst)
@@ -201,6 +229,8 @@ def _system_prompt(fitness_ctx: str, mem: dict) -> str:
 4. 피로(TSB < -20)가 쌓였으면 회복을 우선 처방해라.
 5. 한국어로 친근하고 명확하게 대화해라.
 6. 처방 워크아웃은 목적(E/M/T/I/R)과 함께 제시해라.
+7. 러닝 아래 `└ Z3 ... → 고강도 xx%` 라인이 있으면, 그게 그 세션의 실제 자극 크기다.
+   인터벌은 평균 페이스가 강도를 뭉개므로, 존 체류 시간을 평균 페이스보다 우선해서 판단해라.
 
 ## 날짜 규칙 (절대 준수)
 - "이번 주 실제 러닝" 섹션에 있는 날짜만 완료된 훈련으로 표시해라.

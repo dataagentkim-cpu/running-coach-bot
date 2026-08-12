@@ -107,6 +107,16 @@ class GarminClient:
             log.warning("quick_check 실패: %s", e)
             return []
 
+    def fetch_hr_zones(self, activity_id: int) -> list[dict] | None:
+        """활동의 심박존별 체류 시간 조회. 실패 시 None."""
+        if not self.api:
+            self.connect()
+        try:
+            return self.api.get_activity_hr_in_timezones(activity_id) or None
+        except Exception as e:
+            log.warning("심박존 조회 실패 (%s): %s", activity_id, e)
+            return None
+
     def sync_wellness_today(self) -> dict:
         """오늘 + 어제 웰니스만 빠르게 조회 (아침 레디니스용)."""
         if not self.api:
@@ -166,6 +176,15 @@ def _apply_overrides(acts: list[dict]) -> list[dict]:
 
 def load_wellness() -> list[dict]:
     return _load(DATA_DIR / "wellness.json", [])
+
+
+def load_hr_zones() -> dict:
+    """activityId(str) → 심박존 체류 시간 목록. sync 덮어쓰기와 무관하게 별도 보관."""
+    return _load(DATA_DIR / "hr_zones.json", {})
+
+
+def save_hr_zones(zones: dict) -> None:
+    _save(DATA_DIR / "hr_zones.json", zones)
 
 
 def load_seen_ids() -> set[int]:

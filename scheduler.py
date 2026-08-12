@@ -121,8 +121,10 @@ from coach import RunningCoach
 from garmin_client import (
     GarminClient,
     load_activities,
+    load_hr_zones,
     load_seen_ids,
     load_wellness,
+    save_hr_zones,
     save_seen_ids,
     _save,
 )
@@ -193,6 +195,16 @@ async def check_new_runs(context: CallbackContext) -> None:
         if run.get("activityId") not in cached_ids:
             cached.insert(0, run)
     _save(DATA_DIR / "activities.json", cached)
+
+    # 심박존 체류 시간 수집 — 활동당 1회만, 코치 분석 전에 캐시를 채워둔다
+    zones_cache = load_hr_zones()
+    for run in new_runs:
+        aid = run.get("activityId")
+        if aid and str(aid) not in zones_cache:
+            z = client.fetch_hr_zones(aid)
+            if z:
+                zones_cache[str(aid)] = z
+    save_hr_zones(zones_cache)
 
     wellness = load_wellness()
 
