@@ -16,6 +16,11 @@ MEMORY_FILE = Path(__file__).parent / "data" / "coach_memory.json"
 HISTORY_LIMIT = 20  # 대화 히스토리 최대 턴 수
 
 
+# 모델을 한 곳에서만 정의한다. 이전엔 두 호출부에 하드코딩돼 있어 투자봇이 sonnet-5로
+# 넘어갈 때 이쪽만 sonnet-4-6에 남아 있었다.
+MODEL = "claude-opus-5"
+
+
 def _default_memory() -> dict:
     return {
         "goal": None,          # {"race": str, "distance": str, "date": str, "target_time": str}
@@ -241,6 +246,15 @@ def _system_prompt(fitness_ctx: str, mem: dict) -> str:
 
 # ── 대화 인터페이스 ──────────────────────────────────────────────────────────
 
+def _reply_text(response) -> str:
+    """adaptive thinking이 켜지면 content[0]가 thinking 블록이라 .text가 비어 있다.
+    실제 답변은 첫 text 블록에서 꺼내야 한다."""
+    for block in response.content:
+        if block.type == "text":
+            return block.text
+    raise RuntimeError("응답에 text 블록이 없음 (max_tokens 부족으로 잘렸을 가능성)")
+
+
 class RunningCoach:
     def __init__(self):
         self.client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
@@ -260,12 +274,14 @@ class RunningCoach:
         history.append({"role": "user", "content": user_message})
 
         response = self.client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
+            model=MODEL,
+            max_tokens=4096,  # thinking + 답변 합계 상한. 1024면 사고가 예산을 먹고 답변이 잘린다.
             system=system,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "medium"},
             messages=history[-HISTORY_LIMIT:],
         )
-        reply = response.content[0].text
+        reply = _reply_text(response)
 
         history.append({"role": "assistant", "content": reply})
         mem["conversation"] = history[-HISTORY_LIMIT:]
@@ -313,9 +329,11 @@ class RunningCoach:
         system = _system_prompt(fitness_ctx, mem)
 
         response = self.client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=600,
+            model=MODEL,
+            max_tokens=2048,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "medium"},
             system=system,
             messages=[{"role": "user", "content": "내 현재 피트니스 상태를 분석해서 한눈에 볼 수 있는 요약 리포트를 만들어줘. VDOT, 체력/피로/컨디션 수치 해석 포함."}],
         )
-        return response.content[0].text
+        return _reply_text(response)
