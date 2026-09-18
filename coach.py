@@ -62,6 +62,36 @@ def add_coaching_note(note: str) -> None:
 
 # ── 컨텍스트 빌더 ────────────────────────────────────────────────────────────
 
+def _zones_from_activity(act: dict) -> list[dict]:
+    """활동 페이로드의 hrTimeInZone_1..5 → _zone_summary 가 받는 모양으로.
+
+    ★이 값은 이미 활동에 실려 온다.★ 별도 조회로 받아 hr_zones.json 에 캐시하던 것과
+    초 단위로 같은 값이고(대조 21/21 일치), 그 파일에만 있던 zoneLowBoundary 는 코드가
+    쓰지 않는다. 그래서 따로 부를 이유가 없다 — 새 런마다 호출 1회가 줄어든다.
+
+    다섯 필드가 다 없으면 빈 목록을 돌려준다. 부르는 쪽이 캐시로 폴백한다.
+    """
+    zones = []
+    for i in range(1, 6):
+        v = act.get(f"hrTimeInZone_{i}")
+        if v is None:
+            continue
+        zones.append({"zoneNumber": i, "secsInZone": v})
+    return zones
+
+
+def zones_for(act: dict, cache: dict) -> list[dict]:
+    """활동의 심박존. 활동에 없으면 ★기존 캐시로 폴백★ 한다.
+
+    보유율이 100% 가 아니다(측정 78건 중 76건). 남은 것은 예전에 받아둔 캐시에 있다.
+    폴백이 없으면 그 활동의 존 라인이 조용히 사라진다.
+    """
+    zones = _zones_from_activity(act)
+    if zones:
+        return zones
+    return cache.get(str(act.get("activityId")), [])
+
+
 def _zone_summary(zones: list[dict]) -> str:
     """심박존 체류 시간 → 'Z3 7.8분 · Z4 33.9분 → 고강도 82%' 형태.
 
@@ -195,7 +225,7 @@ def build_fitness_context(activities: list[dict], wellness: list[dict]) -> str:
                 result.append(
                     f"  {d.strftime('%m/%d')}({wd}): {dist_km:.1f}km @ {an.format_pace(pace_sec)}, 심박 {round(hr)}bpm"
                 )
-                act_zones = hr_zones.get(str(act.get("activityId")), [])
+                act_zones = zones_for(act, hr_zones)
                 zsum = _zone_summary(act_zones)
                 if zsum:
                     result.append(f"    └ {zsum}")

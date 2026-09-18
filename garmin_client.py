@@ -285,25 +285,6 @@ class GarminClient:
             log.warning("quick_check 실패: %s", e)
             return []
 
-    def fetch_hr_zones(self, activity_id: int) -> list[dict] | None:
-        """활동의 심박존별 체류 시간 조회. 실패 시 None."""
-        if not self.api:
-            self.connect()
-        try:
-            return self.api.get_activity_hr_in_timezones(activity_id) or None
-        except Exception as e:
-            log.warning("심박존 조회 실패 (%s): %s", activity_id, e)
-            return None
-
-    # ── 워크아웃 밀어넣기 ────────────────────────────────────────────────────
-    #
-    # 흐름은 ★업로드 + 예약 2회★ 다. 기기로 직접 밀어넣는 호출은 배포 환경(0.3.6)에 없고,
-    # 없어도 Garmin Connect 앱이 시계와 동기화한다. 그래서 기기 id 를 알아낼 필요도 없다.
-    #
-    # ★예약 워크아웃을 조회하는 호출을 폴링에 넣지 마라.★ quick_check 가 5분마다 도는데
-    # 거기에 하나를 더하면 호출량이 두 배가 된다. 토큰 만료로 재로그인이 몰려 계정이 잠긴
-    # 적이 있고, 그게 같은 축이다.
-
     def upload_workout(self, workout) -> dict:
         """RunningWorkout 업로드. 반환은 Garmin 응답 dict(workoutId 포함)."""
         if not self.api:
