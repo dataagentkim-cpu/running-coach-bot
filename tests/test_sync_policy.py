@@ -97,3 +97,88 @@ def test_should_write_가_양쪽_답을_모두_낸다():
     # 항상 True 를 돌려줘도 위 단정 대부분이 통과한다. 두 답이 다 나오는지 본다.
     answers = {sp.should_write([], [1]), sp.should_write([1], [])}
     assert answers == {True, False}
+
+
+# ── 실제 배선 (네트워크 없음 — api 를 스텁으로 갈아끼운다) ───────────────────
+
+def _client(monkeypatch, tmp_path, api):
+    import garmin_client as gc
+    d = tmp_path / "data"; d.mkdir()
+    monkeypatch.setattr(gc, "DATA_DIR", d)
+    c = gc.GarminClient()
+    c.api = api
+    return gc, c, d
+
+
+class _AllFail:
+    def __init__(self): self.calls = []
+    def get_stats(self, date_str):
+        self.calls.append(date_str)
+        raise RuntimeError("429")
+
+
+class _AllOk:
+    def __init__(self): self.calls = []
+    def get_stats(self, date_str):
+        self.calls.append(date_str)
+        return {"ok": True}
+
+
+def test_전부_실패하면_3회에서_멈춘다(monkeypatch, tmp_path):
+    # ★차단 중에 70번을 더 때리면 차단만 깊어진다.★
+    api = _AllFail()
+    _, c, _ = _client(monkeypatch, tmp_path, api)
+    assert c._fetch_wellness(days=70) == []
+    assert len(api.calls) == 3, f"{len(api.calls)}회 돌았다"
+
+
+def test_정상이면_끝까지_돈다(monkeypatch, tmp_path):
+    api = _AllOk()
+    _, c, _ = _client(monkeypatch, tmp_path, api)
+    assert len(c._fetch_wellness(days=10)) == 10
+    assert len(api.calls) == 10
+
+
+def test_수집_실패가_기존_웰니스를_안_덮는다(monkeypatch, tmp_path):
+    # ★이게 09-06 에서 멈춘 기록이 사라지지 않게 하는 지점이다.★
+    gc, c, d = _client(monkeypatch, tmp_path, _AllFail())
+    gc._save(d / "wellness.json", [{"date": "2026-09-06"}, {"date": "2026-09-05"}])
+    gc._save(d / "activities.json", [{"activityId": 1}])
+    monkeypatch.setattr(c, "_fetch_activities", lambda weeks: [{"activityId": 1}])
+    n_acts, n_well = c.sync(weeks=1)
+    saved = gc._load(d / "wellness.json", None)
+    assert len(saved) == 2, "빈 결과가 기존 기록을 덮었다"
+    assert n_well == 2, "반환값이 실제 보관된 수와 달라 호출부가 오해한다"
+
+
+def test_정상_수집은_저장된다(monkeypatch, tmp_path):
+    gc, c, d = _client(monkeypatch, tmp_path, _AllOk())
+    monkeypatch.setattr(c, "_fetch_activities", lambda weeks: [{"activityId": 9}])
+    c.sync(weeks=1)
+    assert len(gc._load(d / "wellness.json", [])) == 7
+    assert gc._load(d / "activities.json", [])[0]["activityId"] == 9
+
+
+class _FailEvery(list):
+    """지정한 회차에서만 실패한다 — 흩어진 실패를 만든다."""
+
+    def __init__(self, fail_idx):
+        super().__init__()
+        self.fail_idx = set(fail_idx)
+        self.n = 0
+
+    def get_stats(self, date_str):
+        self.append(date_str)
+        i, self.n = self.n, self.n + 1
+        if i in self.fail_idx:
+            raise RuntimeError("일시 실패")
+        return {"ok": True}
+
+
+def test_흩어진_실패로는_안_멈춘다(monkeypatch, tmp_path):
+    # ★성공하면 연속 카운터가 풀려야 한다.★ 안 풀리면 몇 건 실패로 수집이 통째로 잘린다.
+    api = _FailEvery({0, 2, 4, 6, 8})  # 하나 걸러 실패 — 연속 3회는 안 된다
+    _, c, _ = _client(monkeypatch, tmp_path, api)
+    got = c._fetch_wellness(days=10)
+    assert len(api) == 10, f"흩어진 실패로 {len(api)}회에서 멈췄다"
+    assert len(got) == 5, "성공한 회차가 수집돼야 한다"

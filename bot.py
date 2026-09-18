@@ -17,6 +17,7 @@ from telegram.ext import (
 )
 
 import analytics as an
+import freshness as fr
 import workout_builder as wb
 from coach import (
     RunningCoach,
@@ -28,7 +29,9 @@ from coach import (
     set_goal,
 )
 from garmin_client import (
+    GarminBlocked,
     GarminClient,
+    garmin_status_line,
     last_sync_time,
     load_activities,
     load_wellness,
@@ -53,13 +56,30 @@ def _activities_or_warn() -> tuple[list, list, str | None]:
 
 
 def _sync_status() -> str:
+    from datetime import datetime
     t = last_sync_time()
     if not t:
         return "❌ 아직 동기화 안 됨"
+    age = fr.age_text(datetime.now(), t)
+    return f"✅ 마지막 동기화: {age}" if not fr.is_stale(datetime.now(), t) else f"⚠️ {t.strftime('%m/%d')} ({age})"
+
+
+def freshness_note(wellness: list[dict] | None = None, missing: list[str] | None = None) -> str | None:
+    """★모든 답변 경로가 이 한 곳을 부른다.★ 진입점마다 따로 붙이면 새 경로에서 빠뜨린다.
+
+    캐시로 답하면서 그 사실을 안 밝히면, 낡은 값으로 그럴듯한 답이 나가고 아무도 모른다.
+    실제로 아침 메시지가 이틀 동안 그렇게 나갔다.
+    """
     from datetime import datetime
-    delta = datetime.now() - t
-    h = int(delta.total_seconds() // 3600)
-    return f"✅ 마지막 동기화: {h}시간 전" if h < 24 else f"⚠️ {t.strftime('%m/%d')} ({h//24}일 전)"
+    well_date = None
+    if wellness:
+        well_date = (wellness[0] or {}).get("date")
+    return fr.line(datetime.now(), last_sync_time(), well_date, missing)
+
+
+async def _reply_with_freshness(update, text: str, wellness=None, missing=None) -> None:
+    note = freshness_note(wellness, missing)
+    await update.message.reply_text(text if not note else f"{text}\n\n{note}")
 
 
 # ── 커맨드 핸들러 ──────────────────────────────────────────────────────────────
@@ -115,7 +135,9 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.message.chat.send_action(ChatAction.TYPING)
     report = coach.status_report(acts, well)
-    await update.message.reply_text(report)
+    # ★마지막 Garmin 성공 시각과 게이트 상태를 여기 붙인다.★ 호출은 하지 않는다 — 디스크만 읽는다.
+    report = f"{report}\n\n{garmin_status_line()}"
+    await _reply_with_freshness(update, report, well)
 
 
 async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -125,7 +147,7 @@ async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.message.chat.send_action(ChatAction.TYPING)
     plan = coach.today_workout(acts, well)
-    await update.message.reply_text(plan)
+    await _reply_with_freshness(update, plan, well)
 
 
 async def cmd_last(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -135,7 +157,7 @@ async def cmd_last(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.message.chat.send_action(ChatAction.TYPING)
     analysis = coach.analyze_last_run(acts, well)
-    await update.message.reply_text(analysis)
+    await _reply_with_freshness(update, analysis, well)
 
 
 async def cmd_week(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -145,7 +167,7 @@ async def cmd_week(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.message.chat.send_action(ChatAction.TYPING)
     plan = coach.weekly_plan(acts, well)
-    await update.message.reply_text(plan)
+    await _reply_with_freshness(update, plan, well)
 
 
 async def cmd_zones(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -220,10 +242,10 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         # 코치가 세션을 제안했으면 답 밑에 미리보기와 버튼을 붙인다.
         # ★자유대화만으로 업로드까지 가지 않게 한다★ — 계정에 쌓인 것은 되돌리는 비용이 있다.
         if spec:
-            await update.message.reply_text(reply)
+            await _reply_with_freshness(update, reply, well)
             await update.message.reply_text(_preview(spec), reply_markup=_upload_keyboard())
         else:
-            await update.message.reply_text(reply)
+            await _reply_with_freshness(update, reply, well)
     except Exception as e:
         log.exception("코치 응답 오류")
         await update.message.reply_text(f"오류가 발생했어: {e}")
@@ -354,6 +376,15 @@ async def on_workout_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> N
             "scheduled": scheduled,
         })
         clear_pending_spec()
+    except GarminBlocked as e:
+        # ★게이트가 막은 것은 고장이 아니다.★ 조용히 실패하면 사용자는 올라간 줄 안다.
+        #   세션은 pending 으로 남겨둔다 — ★대기 큐는 만들지 않는다.★ 풀린 뒤 /workout 이면 된다.
+        log.info("업로드 게이트 차단: %s", e)
+        await query.edit_message_text(
+            f"⏸ 지금 Garmin 이 잠겨 있어 ({e}).\n"
+            "세션은 저장해뒀어 — 풀리면 /workout 으로 다시 올리면 돼."
+        )
+        return
     except Exception as e:
         log.exception("워크아웃 업로드 실패")
         # ★기록을 남기지 않는다★ — 실패한 업로드를 기록하면 정리가 없는 것을 지우려 든다.

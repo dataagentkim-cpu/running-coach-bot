@@ -118,14 +118,18 @@ def _fetch_weather() -> str:
 
 import analytics as an
 from coach import RunningCoach
+import alert_policy
+import freshness
 from garmin_client import (
     GarminBlocked,
     GarminClient,
+    record_garmin_result,
     _block,
     cleanup_workouts,
     garmin_gate_status,
     load_activities,
     load_hr_zones,
+    last_sync_time,
     load_seen_ids,
     load_wellness,
     save_hr_zones,
@@ -252,14 +256,36 @@ async def check_new_runs(context: CallbackContext) -> None:
 
 # ── ② 아침 레디니스 알림 (매일 07:00 KST) ────────────────────────────────────
 
+def _looks_like_auth(e: BaseException) -> bool:
+    """인증 계열 실패인가 — 사람이 손대야 풀리는 종류라 즉시 알린다.
+
+    ★문자열 판별은 불완전하다.★ 아니라고 판정되면 일반 실패로 떨어질 뿐이라 안전한 쪽이다.
+    """
+    text = f"{type(e).__name__} {e}".lower()
+    return any(k in text for k in ("auth", "login", "credential", "unauthor", "401", "403", "mfa"))
+
+
 async def morning_readiness(context: CallbackContext) -> None:
     """바디배터리·수면 기반 오늘 훈련 강도 제안."""
     today_wellness = {}
+    missing: list[str] = []
+    alert: str | None = None
     try:
         client = GarminClient()
         today_wellness = client.sync_wellness_today()
+        alert = record_garmin_result(alert_policy.OK)
+    except GarminBlocked as e:
+        # 게이트가 막은 것 — 고장이 아니다. 다만 ★빠졌다는 사실은 메시지에 남긴다.★
+        log.info("웰니스 조회 게이트 차단: %s", e)
+        missing.append("웰니스")
     except Exception as e:
-        log.warning("웰니스 조회 실패 (Garmin 없이 날씨+코스피만 발송): %s", e)
+        # ★여기가 이틀 동안 아무도 모른 자리다.★ 예외를 삼키고 "날씨+코스피만" 으로 보냈는데
+        #   메시지 형태가 비슷해서 핵심이 빠진 것을 알아채지 못했다. 이제는 메시지에 적는다.
+        log.warning("웰니스 조회 실패: %s", e)
+        missing.append("웰니스")
+        alert = record_garmin_result(
+            alert_policy.AUTH if _looks_like_auth(e) else alert_policy.OTHER
+        )
 
     # 어제 데이터 우선 (오늘 아침엔 어제 밤 데이터가 가장 신선) — KST 기준
     now_kst = datetime.now(KST)
@@ -311,7 +337,22 @@ async def morning_readiness(context: CallbackContext) -> None:
         lines.append(f"\n컨디션(TSB): {tsb:+.0f} | 체력(CTL): {ctl:.0f} | 피로(ATL): {atl:.0f}")
 
     lines.append("\n/today 로 오늘 워크아웃 받아봐 💪")
+
+    # ★빠진 것과 낡은 것을 메시지 안에 적는다.★ 조용히 빼면 형태가 비슷해서 아무도 모른다 —
+    #   실제로 이틀 동안 09-06 자 캐시로 답하면서 표시가 없었다.
+    note = freshness.line(
+        datetime.now(),
+        last_sync_time(),
+        (w or {}).get("calendarDate") or (w or {}).get("date"),
+        missing,
+    )
+    if note:
+        lines.append(f"\n{note}")
     await _send(context, "\n".join(lines))
+
+    # 접속 실패 알림은 ★본문과 따로★ 보낸다. 본문에 섞으면 매일 오는 메시지에 묻힌다.
+    if alert:
+        await _send(context, alert)
 
 
 # ── ③ 주간 리포트 (매주 월요일 09:00 KST) ────────────────────────────────────

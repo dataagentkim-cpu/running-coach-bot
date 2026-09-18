@@ -6,6 +6,8 @@ import logging
 import os
 import re
 import time
+
+import sync_policy
 import pytz
 from datetime import date, datetime, timedelta
 KST = pytz.timezone("Asia/Seoul")
@@ -37,11 +39,27 @@ class GarminBlocked(RuntimeError):
     """지금은 Garmin 을 호출하면 안 된다. 호출부는 조용히 건너뛴다."""
 
 
+# 알림 정책이 쓰는 두 값. ★게이트의 기존 세 키와 같은 파일에 얹는다.★
+# 이미 EC2 에 그 파일이 있고 거기엔 이 키가 없다 — 그래서 읽을 때 기본값을 채워 넣는다.
+# 없는 키를 그대로 두면 첫 호출에서 KeyError 가 나고, 그건 알림이 통째로 안 도는 실패다.
+_GATE_DEFAULTS = {
+    "blocked_until": 0.0,
+    "fail_count": 0,
+    "last_relogin": 0.0,
+    "last_success_at": None,   # ISO 문자열 또는 None
+    "last_notified_at": None,
+    "fail_since": None,
+}
+
+
 def _load_gate() -> dict:
     try:
-        return json.loads(_STATE_PATH.read_text())
+        st = json.loads(_STATE_PATH.read_text())
+        if not isinstance(st, dict):
+            raise ValueError("gate state 가 dict 가 아니다")
     except Exception:
-        return {"blocked_until": 0.0, "fail_count": 0, "last_relogin": 0.0}
+        st = {}
+    return {**_GATE_DEFAULTS, **st}
 
 
 def _save_gate(st: dict) -> None:
@@ -71,9 +89,61 @@ def garmin_gate_status() -> dict:
 
 
 def clear_garmin_gate() -> None:
-    """사람이 직접 푼다."""
-    _save_gate({"blocked_until": 0.0, "fail_count": 0, "last_relogin": 0.0})
+    """사람이 직접 푼다. ★알림 이력은 남긴다★ — 마지막 성공 시각은 게이트와 무관한 사실이다."""
+    st = _load_gate()
+    _save_gate({**st, "blocked_until": 0.0, "fail_count": 0, "last_relogin": 0.0})
     log.info("Garmin 게이트 해제됨")
+
+def _dt(v: str | None) -> datetime | None:
+    if not v:
+        return None
+    try:
+        return datetime.fromisoformat(v)
+    except (TypeError, ValueError):
+        return None  # 못 읽는 값은 '없음' 으로 본다 — 여기서 죽으면 알림이 통째로 안 돈다
+
+
+def record_garmin_result(kind: str, now: datetime | None = None) -> str | None:
+    """Garmin 호출 결과를 기록하고 ★보낼 알림 문구★ 를 돌려준다. 없으면 None.
+
+    판단은 alert_policy 가 한다(순수). 여기서는 상태 파일에서 값을 꺼내 넘기고 새 값을 적기만 한다.
+    kind: alert_policy.OK / AUTH / OTHER.
+    """
+    import alert_policy as ap
+
+    now = now or datetime.now(KST).replace(tzinfo=None)
+    st = _load_gate()
+    d = ap.decide(
+        now,
+        _dt(st.get("last_success_at")),
+        _dt(st.get("fail_since")),
+        _dt(st.get("last_notified_at")),
+        kind,
+        int(st.get("fail_count") or 0),
+    )
+    _save_gate({
+        **st,
+        "last_success_at": d.last_success_at.isoformat() if d.last_success_at else None,
+        "last_notified_at": d.last_notified_at.isoformat() if d.last_notified_at else None,
+        "fail_since": d.fail_since.isoformat() if d.fail_since else None,
+    })
+    return d.alert
+
+
+def garmin_status_line(now: datetime | None = None) -> str:
+    """/status 에 붙일 한 줄. 호출 없음 — 디스크 상태만 읽는다."""
+    import alert_policy as ap
+
+    now = now or datetime.now(KST).replace(tzinfo=None)
+    st = garmin_gate_status()
+    line = ap.status_line(now, _dt(st.get("last_success_at")), _dt(st.get("fail_since")),
+                          int(st.get("fail_count") or 0))
+    if st.get("disabled_file"):
+        line += " · ★킬스위치 켜짐★"
+    elif st.get("blocked_sec_left"):
+        line += f" · 차단 {int(st['blocked_sec_left'] // 60)}분 남음"
+    return line
+
 
 DATA_DIR = Path(__file__).parent / "data"
 
@@ -165,8 +235,22 @@ class GarminClient:
         wellness = self._fetch_wellness(days=weeks * 7)
 
         DATA_DIR.mkdir(exist_ok=True)
-        _save(DATA_DIR / "activities.json", activities)
-        _save(DATA_DIR / "wellness.json", wellness)
+
+        # ★빈 결과로 기존 기록을 덮지 않는다.★ 수집이 전부 실패해도 빈 목록이 돌아오는데,
+        #   그걸 그대로 쓰면 쌓여 있던 기록이 한 번에 사라지고 실패는 아무 데도 안 남는다.
+        previous_acts = load_activities()
+        if sync_policy.should_write(activities, previous_acts):
+            _save(DATA_DIR / "activities.json", activities)
+        else:
+            log.warning("활동 저장 건너뜀 — %s", sync_policy.write_skip_reason(activities, previous_acts))
+            activities = previous_acts
+
+        previous_well = load_wellness()
+        if sync_policy.should_write(wellness, previous_well):
+            _save(DATA_DIR / "wellness.json", wellness)
+        else:
+            log.warning("웰니스 저장 건너뜀 — %s", sync_policy.write_skip_reason(wellness, previous_well))
+            wellness = previous_well
 
         log.info("동기화 완료: 활동 %d개, 웰니스 %d일", len(activities), len(wellness))
         return len(activities), len(wellness)
@@ -269,15 +353,34 @@ class GarminClient:
         return result
 
     def _fetch_wellness(self, days: int) -> list[dict]:
-        wellness = []
+        """★연속 실패가 이어지면 남은 회차를 돌지 않는다.★
+
+        이전에는 70회를 전부 두드리면서 각 실패를 그냥 삼켰다. 차단 중이면 70번을 더 때려
+        차단만 깊어지고, 전부 실패해도 빈 목록이 그대로 돌아가 파일을 덮었다.
+        """
+        wellness: list[dict] = []
+        consecutive = 0
+        failures = 0
         for i in range(days):
+            if sync_policy.should_stop(consecutive):
+                log.warning(
+                    "웰니스 수집 중단 — 연속 %d회 실패 (%d/%d일 수집됨)",
+                    consecutive, len(wellness), days,
+                )
+                break
             date_str = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
             try:
                 stats = self.api.get_stats(date_str) or {}
+                consecutive = 0
                 if stats:
                     wellness.append({"date": date_str, **stats})
-            except Exception:
-                pass
+            except Exception as e:
+                consecutive += 1
+                failures += 1
+                # ★조용히 삼키지 않는다.★ 이전에는 except: pass 라 아무 흔적이 없었다.
+                log.warning("웰니스 조회 실패 (%s): %s", date_str, e)
+        if failures:
+            log.warning("웰니스 수집: %d일 중 %d회 실패", days, failures)
         return wellness
 
 
