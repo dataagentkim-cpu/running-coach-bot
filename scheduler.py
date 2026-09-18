@@ -122,6 +122,7 @@ from garmin_client import (
     GarminBlocked,
     GarminClient,
     _block,
+    cleanup_workouts,
     garmin_gate_status,
     load_activities,
     load_hr_zones,
@@ -355,3 +356,12 @@ async def weekly_report(context: CallbackContext) -> None:
         await _send(context, header + last_str + fitness_str + "🗓 이번 주 계획\n" + plan)
     except Exception as e:
         await _send(context, header + last_str + fitness_str + f"계획 생성 오류: {e}")
+
+    # 오래된 RC- 워크아웃 정리. ★업로드 경로가 아니라 여기★ 에 둔다 — 업로드마다 정리하면
+    # 업로드가 느려지고 실패 지점만 늘어난다. 이 잡은 주 1회 이미 도는 자리다.
+    try:
+        deleted = cleanup_workouts(client, keep_days=14)
+        if deleted:
+            log.info("주간 정리: 워크아웃 %d건 삭제", deleted)
+    except Exception as e:
+        log.warning("워크아웃 정리 실패: %s", e)

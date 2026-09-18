@@ -9,6 +9,8 @@ import anthropic
 from dotenv import load_dotenv
 
 import analytics as an
+from garmin_client import load_workouts
+from workout_builder import WORKOUT_SPEC_TOOL
 
 load_dotenv()
 
@@ -83,6 +85,64 @@ def _zone_summary(zones: list[dict]) -> str:
     return " · ".join(parts) + f" → 고강도 {hard / total * 100:.0f}%"
 
 
+def _plan_vs_actual(spec: dict, zones: list[dict]) -> str:
+    """계획한 고강도 시간 ↔ 실제 체류 시간 한 줄. 대조할 게 없으면 빈 문자열.
+
+    이 줄이 다음 처방의 입력이 된다 — 설계·실행·측정이 한 바퀴 도는 자리다.
+    새 데이터 수집도, 새 API 호출도 필요 없다. 심박존은 이미 런 감지가 받아온다.
+    """
+    if not spec or not zones:
+        return ""
+    planned_sec = _planned_hard_seconds(spec)
+    if planned_sec <= 0:
+        return ""
+    actual_sec = sum(
+        z.get("secsInZone") or 0 for z in zones if (z.get("zoneNumber") or 0) >= 4
+    )
+    if actual_sec <= 0:
+        return f"계획 고강도 {planned_sec / 60:.0f}분 / 실제 Z4+ 기록 없음"
+    diff = (actual_sec - planned_sec) / planned_sec * 100
+    return (
+        f"계획 고강도 {planned_sec / 60:.0f}분 / 실제 Z4+ {actual_sec / 60:.1f}분 ({diff:+.0f}%)"
+    )
+
+
+def _planned_hard_seconds(spec: dict) -> float:
+    """스펙에서 '고강도로 의도한' 시간을 센다 — interval 스텝만, 반복 횟수를 곱한다.
+
+    거리로 지정된 구간은 목표 페이스로 환산한다. 목표가 없으면 셀 수 없으니 뺀다 —
+    모르는 것을 추정해 넣으면 대조 자체가 거짓이 된다.
+    """
+    total = 0.0
+    for step in spec.get("steps") or []:
+        if step.get("type") == "repeat":
+            total += int(step.get("iterations", 1)) * _planned_hard_seconds(step)
+            continue
+        if step.get("type") != "interval":
+            continue
+        cond = step.get("condition") or {}
+        if "duration_sec" in cond:
+            total += float(cond["duration_sec"])
+            continue
+        dist = float(cond.get("distance_m") or 0)
+        pace = (step.get("target") or {}).get("pace_range_sec")
+        if dist > 0 and pace:
+            total += dist / 1000.0 * (float(pace[0]) + float(pace[1])) / 2
+    return total
+
+
+def spec_for_date(date_str: str) -> dict | None:
+    """그 날짜에 우리가 올린 워크아웃의 스펙. 없으면 None.
+
+    ★하루 1세션 가정이다.★ 예약 워크아웃과 완료 활동을 Garmin 이 연결해 주는지 확인하지
+    못해서 날짜(KST)로 맞춘다. 하루 2세션이면 어긋난다.
+    """
+    for item in reversed(load_workouts()):
+        if item.get("date") == date_str:
+            return item.get("spec")
+    return None
+
+
 def build_fitness_context(activities: list[dict], wellness: list[dict]) -> str:
     """현재 피트니스 상태를 코치 프롬프트용 텍스트로 변환."""
     import pytz
@@ -135,9 +195,13 @@ def build_fitness_context(activities: list[dict], wellness: list[dict]) -> str:
                 result.append(
                     f"  {d.strftime('%m/%d')}({wd}): {dist_km:.1f}km @ {an.format_pace(pace_sec)}, 심박 {round(hr)}bpm"
                 )
-                zsum = _zone_summary(hr_zones.get(str(act.get("activityId")), []))
+                act_zones = hr_zones.get(str(act.get("activityId")), [])
+                zsum = _zone_summary(act_zones)
                 if zsum:
                     result.append(f"    └ {zsum}")
+                pva = _plan_vs_actual(spec_for_date(d.strftime("%Y-%m-%d")) or {}, act_zones)
+                if pva:
+                    result.append(f"    └ {pva}")
         return result
 
     this_week_lines = _acts_in_range(week_start, today_kst)
@@ -236,6 +300,12 @@ def _system_prompt(fitness_ctx: str, mem: dict) -> str:
 6. 처방 워크아웃은 목적(E/M/T/I/R)과 함께 제시해라.
 7. 러닝 아래 `└ Z3 ... → 고강도 xx%` 라인이 있으면, 그게 그 세션의 실제 자극 크기다.
    인터벌은 평균 페이스가 강도를 뭉개므로, 존 체류 시간을 평균 페이스보다 우선해서 판단해라.
+8. 러닝 아래 `└ 계획 고강도 .. / 실제 Z4+ ..` 라인이 있으면, 그게 지난 처방이 실제로 어떻게
+   수행됐는지다. 다음 처방의 강도 보정에 반영해라 — 실제가 계획보다 크게 넘쳤으면 줄이고,
+   크게 못 미쳤으면 구간 길이나 목표를 다시 봐라.
+9. 세션을 시계로 보낼 만한 형태로 제안할 때는 propose_workout 도구를 함께 써라. 설명은 평소대로
+   하고, 도구에는 그 설명과 같은 내용을 구조로 담아라. 도구를 썼다고 바로 업로드되지 않는다 —
+   사용자가 버튼으로 확인한다.
 
 ## 날짜 규칙 (절대 준수)
 - "이번 주 실제 러닝" 섹션에 있는 날짜만 완료된 훈련으로 표시해라.
@@ -253,6 +323,25 @@ def _reply_text(response) -> str:
         if block.type == "text":
             return block.text
     raise RuntimeError("응답에 text 블록이 없음 (max_tokens 부족으로 잘렸을 가능성)")
+
+
+def _spec_from(response) -> dict | None:
+    """응답에 tool_use 블록이 있으면 그 입력(=스펙)을 꺼낸다. 없으면 None."""
+    for block in response.content:
+        if getattr(block, "type", None) == "tool_use" and block.name == WORKOUT_SPEC_TOOL["name"]:
+            return dict(block.input)
+    return None
+
+
+def pending_spec() -> dict | None:
+    """직전에 제안된 스펙. /workout 이 다시 꺼내 쓴다."""
+    return load_memory().get("pending_spec")
+
+
+def clear_pending_spec() -> None:
+    mem = load_memory()
+    mem["pending_spec"] = None
+    save_memory(mem)
 
 
 class RunningCoach:
@@ -279,14 +368,19 @@ class RunningCoach:
             system=system,
             thinking={"type": "adaptive"},
             output_config={"effort": "medium"},
+            # 같은 호출에서 설명과 스펙이 함께 나온다 — 스펙을 얻자고 LLM 을 한 번 더 부르지 않는다.
+            tools=[WORKOUT_SPEC_TOOL],
             messages=history[-HISTORY_LIMIT:],
         )
         reply = _reply_text(response)
+        spec = _spec_from(response)
 
         history.append({"role": "assistant", "content": reply})
         mem["conversation"] = history[-HISTORY_LIMIT:]
+        # 제안된 스펙은 확인 단계까지 살아 있어야 한다 — 봇이 재시작해도 버튼이 동작하게 저장한다.
+        mem["pending_spec"] = spec
         save_memory(mem)
-        return reply
+        return reply, spec
 
     def today_workout(self, activities: list[dict], wellness: list[dict]) -> str:
         """오늘 훈련 처방."""

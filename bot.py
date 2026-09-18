@@ -5,10 +5,11 @@ import logging
 import os
 
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -16,8 +17,23 @@ from telegram.ext import (
 )
 
 import analytics as an
-from coach import RunningCoach, add_coaching_note, load_memory, save_memory, set_goal
-from garmin_client import GarminClient, last_sync_time, load_activities, load_wellness
+import workout_builder as wb
+from coach import (
+    RunningCoach,
+    add_coaching_note,
+    clear_pending_spec,
+    load_memory,
+    pending_spec,
+    save_memory,
+    set_goal,
+)
+from garmin_client import (
+    GarminClient,
+    last_sync_time,
+    load_activities,
+    load_wellness,
+    record_workout,
+)
 
 load_dotenv()
 log = logging.getLogger(__name__)
@@ -200,11 +216,172 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     user_msg = update.message.text or ""
     await update.message.chat.send_action(ChatAction.TYPING)
     try:
-        reply = coach.chat(user_msg, acts or [], well or [])
-        await update.message.reply_text(reply)
+        reply, spec = coach.chat(user_msg, acts or [], well or [])
+        # 코치가 세션을 제안했으면 답 밑에 미리보기와 버튼을 붙인다.
+        # ★자유대화만으로 업로드까지 가지 않게 한다★ — 계정에 쌓인 것은 되돌리는 비용이 있다.
+        if spec:
+            await update.message.reply_text(reply)
+            await update.message.reply_text(_preview(spec), reply_markup=_upload_keyboard())
+        else:
+            await update.message.reply_text(reply)
     except Exception as e:
         log.exception("코치 응답 오류")
         await update.message.reply_text(f"오류가 발생했어: {e}")
+
+
+# ── 워크아웃 밀어넣기 ────────────────────────────────────────────────────────
+#
+# 업로드는 ★항상 확인 한 단계★ 를 거친다. 명령이든 자유대화든 미리보기를 먼저 보여주고
+# 버튼을 눌러야 나간다.
+
+UPLOAD_CALLBACK = "wk:upload"
+CANCEL_CALLBACK = "wk:cancel"
+
+
+def _upload_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("⌚ 시계로 보내기", callback_data=UPLOAD_CALLBACK),
+        InlineKeyboardButton("취소", callback_data=CANCEL_CALLBACK),
+    ]])
+
+
+def _describe_step(step: dict, indent: str = "") -> list[str]:
+    cond = step.get("condition") or {}
+    if "distance_m" in cond:
+        amount = f"{int(cond['distance_m'])}m"
+    elif "duration_sec" in cond:
+        amount = f"{int(cond['duration_sec']) // 60}분"
+    else:
+        amount = "?"
+    target = step.get("target") or {}
+    if "hr_zone" in target:
+        tgt = f"Z{target['hr_zone']}"
+    elif "pace_zone" in target:
+        tgt = f"{target['pace_zone']}존"
+    elif "pace_range_sec" in target:
+        lo, hi = target["pace_range_sec"]
+        tgt = f"{an.format_pace(lo)}~{an.format_pace(hi)}"
+    else:
+        tgt = "목표 자동"
+    return [f"{indent}· {step.get('type')} {amount} ({tgt})"]
+
+
+def _preview(spec: dict) -> str:
+    """업로드 전에 보여줄 미리보기. 사용자가 여기서 틀린 걸 잡아야 한다."""
+    lines = [f"⌚ {spec.get('name') or wb.name_for(spec, spec.get('date'))}"]
+    if spec.get("date"):
+        lines.append(f"예정일: {spec['date']}")
+    if spec.get("description"):
+        lines.append(spec["description"])
+    lines.append("")
+    for step in spec.get("steps") or []:
+        if step.get("type") == "repeat":
+            lines.append(f"· {step.get('iterations')}회 반복")
+            for child in step.get("steps") or []:
+                lines.extend(_describe_step(child, "   "))
+        else:
+            lines.extend(_describe_step(step))
+    return "\n".join(lines)
+
+
+def _pace_zones_now() -> dict | None:
+    acts = load_activities()
+    if not acts:
+        return None
+    return an.pace_zones(an.best_vdot_from_activities(acts))
+
+
+async def cmd_interval(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """`/interval 400m x8 @R 200m 회복` — LLM 을 타지 않는다. 파싱만 한다."""
+    text = " ".join(ctx.args or [])
+    spec = wb.parse_interval_text(text, _today_kst())
+    if not spec:
+        await update.message.reply_text(
+            "못 읽었어. 예: /interval 400m x8 @R 200m 회복\n"
+            "그냥 말로 설명해도 돼 — 코치가 세션을 제안해줄게."
+        )
+        return
+    mem = load_memory()
+    mem["pending_spec"] = spec
+    save_memory(mem)
+    await update.message.reply_text(_preview(spec), reply_markup=_upload_keyboard())
+
+
+async def cmd_workout(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """직전에 제안된 세션을 다시 꺼낸다."""
+    spec = pending_spec()
+    if not spec:
+        await update.message.reply_text("대기 중인 세션이 없어. /interval 로 직접 지정하거나 오늘 훈련을 물어봐.")
+        return
+    await update.message.reply_text(_preview(spec), reply_markup=_upload_keyboard())
+
+
+async def on_workout_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """확인 버튼. ★여기서만 Garmin 에 쓴다.★ 호출은 업로드 1 + 예약 1 = 2회."""
+    query = update.callback_query
+    await query.answer()
+    if query.data == CANCEL_CALLBACK:
+        clear_pending_spec()
+        await query.edit_message_text("취소했어.")
+        return
+
+    spec = pending_spec()
+    if not spec:
+        await query.edit_message_text("대기 중인 세션이 없어. 다시 만들어줘.")
+        return
+
+    try:
+        workout = wb.build(spec, _pace_zones_now())
+    except wb.SpecError as e:
+        await query.edit_message_text(f"세션을 만들 수 없어: {e}")
+        return
+
+    try:
+        result = client_for_upload().upload_workout(workout)
+        workout_id = result.get("workoutId") if isinstance(result, dict) else None
+        if workout_id is None:
+            raise RuntimeError(f"업로드 응답에 workoutId 가 없다: {result}")
+        scheduled = False
+        date_str = spec.get("date")
+        if date_str:
+            client_for_upload().schedule_workout(workout_id, date_str)
+            scheduled = True
+        record_workout({
+            "workout_id": workout_id,
+            "name": workout.workoutName,
+            "date": date_str,
+            "spec": spec,
+            "scheduled": scheduled,
+        })
+        clear_pending_spec()
+    except Exception as e:
+        log.exception("워크아웃 업로드 실패")
+        # ★기록을 남기지 않는다★ — 실패한 업로드를 기록하면 정리가 없는 것을 지우려 든다.
+        await query.edit_message_text(f"업로드 실패: {e}\n다시 시도하려면 /workout")
+        return
+
+    when = f"{date_str} 로 예약했어" if scheduled else "라이브러리에 올렸어"
+    await query.edit_message_text(
+        f"⌚ {workout.workoutName} {when}.\nGarmin Connect 앱이 시계와 동기화하면 보인다."
+    )
+
+
+_upload_client: GarminClient | None = None
+
+
+def client_for_upload() -> GarminClient:
+    """업로드용 클라이언트를 재사용한다 — 매번 새로 만들면 재로그인이 쌓인다."""
+    global _upload_client
+    if _upload_client is None:
+        _upload_client = GarminClient()
+    return _upload_client
+
+
+def _today_kst() -> str:
+    import datetime as _dt
+
+    import pytz as _pytz
+    return _dt.datetime.now(_pytz.timezone("Asia/Seoul")).strftime("%Y-%m-%d")
 
 
 # ── 봇 실행 ───────────────────────────────────────────────────────────────────
@@ -232,6 +409,9 @@ def run_bot() -> None:
     app.add_handler(CommandHandler("zones", cmd_zones))
     app.add_handler(CommandHandler("goal", cmd_goal))
     app.add_handler(CommandHandler("note", cmd_note))
+    app.add_handler(CommandHandler("interval", cmd_interval))
+    app.add_handler(CommandHandler("workout", cmd_workout))
+    app.add_handler(CallbackQueryHandler(on_workout_button, pattern=r"^wk:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     jq = app.job_queue

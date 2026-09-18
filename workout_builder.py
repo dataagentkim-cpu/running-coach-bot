@@ -150,10 +150,13 @@ def _executable_step(
 ) -> ExecutableStep:
     """스펙 스텝 하나 → ExecutableStep.
 
-    라이브러리의 create_* 헬퍼를 그대로 쓰지 않는 이유: 거리로 끝나는 스텝을 만드는 헬퍼가
-    interval 에만 있다(create_distance_interval_step). warmup·recovery·cooldown 헬퍼는
-    ★시간 전용★ 이라 "1km 조깅으로 워밍업" 같은 스펙을 표현할 수 없다.
+    라이브러리의 create_* 헬퍼를 그대로 쓰지 않는 이유가 둘이다.
+    ① 거리로 끝나는 스텝을 만드는 헬퍼가 없다 — warmup·interval·recovery·cooldown 헬퍼는
+       모두 ★시간 전용★ 이라 "1km 조깅으로 워밍업" 같은 스펙을 표현할 수 없다.
+    ② ★배포 환경의 garminconnect 는 0.3.6 이고 헬퍼가 5개뿐이다.★ 거리 인터벌 헬퍼는
+       그보다 나중 판본에만 있어서, 그걸 쓰면 로컬에서만 돌고 배포에서 깨진다.
     그래서 헬퍼가 쓰는 것과 ★같은 stepType·endCondition 모양★ 으로 직접 만든다.
+    이 모양은 두 판본에서 같다(단위 시험을 0.3.6·최신 양쪽에서 돌려 확인한다).
     """
     kind = step.get("type")
     if kind not in _STEP_TYPES:

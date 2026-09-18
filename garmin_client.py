@@ -4,9 +4,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import pytz
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 KST = pytz.timezone("Asia/Seoul")
 from pathlib import Path
 
@@ -210,6 +211,48 @@ class GarminClient:
             log.warning("심박존 조회 실패 (%s): %s", activity_id, e)
             return None
 
+    # ── 워크아웃 밀어넣기 ────────────────────────────────────────────────────
+    #
+    # 흐름은 ★업로드 + 예약 2회★ 다. 기기로 직접 밀어넣는 호출은 배포 환경(0.3.6)에 없고,
+    # 없어도 Garmin Connect 앱이 시계와 동기화한다. 그래서 기기 id 를 알아낼 필요도 없다.
+    #
+    # ★예약 워크아웃을 조회하는 호출을 폴링에 넣지 마라.★ quick_check 가 5분마다 도는데
+    # 거기에 하나를 더하면 호출량이 두 배가 된다. 토큰 만료로 재로그인이 몰려 계정이 잠긴
+    # 적이 있고, 그게 같은 축이다.
+
+    def upload_workout(self, workout) -> dict:
+        """RunningWorkout 업로드. 반환은 Garmin 응답 dict(workoutId 포함)."""
+        if not self.api:
+            self.connect()
+        return self.api.upload_running_workout(workout)
+
+    def schedule_workout(self, workout_id: int | str, date_str: str) -> dict:
+        """업로드된 워크아웃을 날짜(YYYY-MM-DD)에 예약한다."""
+        if not self.api:
+            self.connect()
+        return self.api.schedule_workout(workout_id, date_str)
+
+    def list_workouts(self, limit: int = 100) -> list[dict]:
+        """워크아웃 목록. 정리(cleanup)에서만 쓴다 — 주 1회다."""
+        if not self.api:
+            self.connect()
+        try:
+            return self.api.get_workouts(0, limit) or []
+        except Exception as e:
+            log.warning("워크아웃 목록 조회 실패: %s", e)
+            return []
+
+    def delete_workout(self, workout_id: int | str) -> bool:
+        """워크아웃 1건 삭제. 실패해도 정리 전체를 멈추지 않는다."""
+        if not self.api:
+            self.connect()
+        try:
+            self.api.delete_workout(workout_id)
+            return True
+        except Exception as e:
+            log.warning("워크아웃 삭제 실패 (%s): %s", workout_id, e)
+            return False
+
     def sync_wellness_today(self) -> dict:
         """오늘 + 어제 웰니스만 빠르게 조회 (아침 레디니스용)."""
         if not self.api:
@@ -278,6 +321,81 @@ def load_hr_zones() -> dict:
 
 def save_hr_zones(zones: dict) -> None:
     _save(DATA_DIR / "hr_zones.json", zones)
+
+
+# ★activities.json 과 반드시 분리한다.★ sync(weeks=10) 이 activities.json 을 통째로
+# 덮어쓰기 때문에, 우리가 올린 워크아웃 기록을 거기 두면 동기화 한 번에 사라진다.
+WORKOUT_KEYS = ("workout_id", "name", "date", "spec", "scheduled")
+
+
+def load_workouts() -> list[dict]:
+    """우리가 올린 워크아웃 기록. data/ 는 gitignore 라 저장소에 안 들어간다."""
+    return _load(DATA_DIR / "workouts.json", [])
+
+
+def save_workouts(items: list[dict]) -> None:
+    _save(DATA_DIR / "workouts.json", items)
+
+
+def record_workout(entry: dict) -> None:
+    """업로드 기록 1건 추가. 같은 workout_id 가 있으면 덮어쓴다(재시도해도 중복이 안 쌓인다)."""
+    items = [w for w in load_workouts() if w.get("workout_id") != entry.get("workout_id")]
+    items.append(entry)
+    save_workouts(items)
+
+
+# ── 워크아웃 정리 ────────────────────────────────────────────────────────────
+#
+# ★RC- 접두사가 곧 소유권 표시다.★ 사용자가 직접 만든 워크아웃은 접두사가 없으므로
+# 정리 대상이 되지 않는다. 날짜도 Garmin 응답이 아니라 ★이름에 박힌 날짜★ 로 읽는다 —
+# 응답 필드 이름에 기대면 판본이 바뀔 때 조용히 아무것도 안 지우거나 엉뚱한 걸 지운다.
+#
+# 업로드 경로에는 정리를 넣지 않는다. 업로드가 느려지고 실패 지점만 늘어난다.
+WORKOUT_PREFIX = "RC-"
+_NAME_DATE = re.compile(r"^RC-(\d{8})-")
+
+
+def workouts_to_cleanup(items: list[dict], today: date, keep_days: int = 14) -> list:
+    """지울 workoutId 목록을 고른다. ★순수 함수 — 네트워크를 타지 않는다.★
+
+    · 이름이 RC- 로 시작하지 않으면 건드리지 않는다(사용자 소유)
+    · 이름에서 날짜를 못 읽으면 건드리지 않는다 — 모르는 건 지우지 않는다
+    · 미래 날짜는 건드리지 않는다(아직 뛰지 않은 예약)
+    """
+    out = []
+    for item in items:
+        name = str(item.get("workoutName") or "")
+        if not name.startswith(WORKOUT_PREFIX):
+            continue
+        m = _NAME_DATE.match(name)
+        if not m:
+            continue
+        try:
+            made = datetime.strptime(m.group(1), "%Y%m%d").date()
+        except ValueError:
+            continue
+        if made > today:
+            continue
+        if (today - made).days > keep_days:
+            wid = item.get("workoutId")
+            if wid is not None:
+                out.append(wid)
+    return out
+
+
+def cleanup_workouts(client: "GarminClient", keep_days: int = 14, today: date | None = None) -> int:
+    """오래된 RC- 워크아웃 정리. 반환은 지운 개수. 주 1회만 부른다."""
+    items = client.list_workouts()
+    targets = workouts_to_cleanup(items, today or datetime.now(KST).date(), keep_days)
+    deleted = 0
+    for wid in targets:
+        if client.delete_workout(wid):
+            deleted += 1
+    if targets:
+        remaining = [w for w in load_workouts() if w.get("workout_id") not in set(targets)]
+        save_workouts(remaining)
+    log.info("워크아웃 정리: 대상 %d건 중 %d건 삭제", len(targets), deleted)
+    return deleted
 
 
 def load_seen_ids() -> set[int]:
