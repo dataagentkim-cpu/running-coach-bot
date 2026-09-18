@@ -119,7 +119,10 @@ def _fetch_weather() -> str:
 import analytics as an
 from coach import RunningCoach
 from garmin_client import (
+    GarminBlocked,
     GarminClient,
+    _block,
+    garmin_gate_status,
     load_activities,
     load_hr_zones,
     load_seen_ids,
@@ -154,10 +157,14 @@ async def check_new_runs(context: CallbackContext) -> None:
     try:
         client = GarminClient()
         recent = client.quick_check(limit=5)
+    except GarminBlocked as e:
+        # 게이트가 막은 것이다 — 이미 디스크에 차단이 기록돼 있으므로 조용히 건너뛴다.
+        log.info("Garmin 폴링 건너뜀: %s", e)
+        return
     except Exception as e:
         log.warning("Garmin 폴링 실패: %s", e)
+        _block(f"폴링 실패: {e}")          # ★디스크 상태★ — 재기동에도 유지된다
         _garmin_blocked_until = time.time() + _GARMIN_BACKOFF_SEC
-        log.info("Garmin 재시도 차단 30분")
         return
 
     running = [

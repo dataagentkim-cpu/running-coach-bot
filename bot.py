@@ -236,7 +236,7 @@ def run_bot() -> None:
 
     jq = app.job_queue
     # ① 런 후 자동 분석 — 5분마다 Garmin 폴링
-    jq.run_repeating(check_new_runs, interval=300, first=30, name="run_detector")
+    jq.run_repeating(check_new_runs, interval=300, first=600, name="run_detector")  # ★first=30 이면 재기동 30초 만에 첫 발사★ — 장애 중 재기동이 곧 재폭주였다
     # ② 아침 레디니스 — 매일 06:30 KST
     jq.run_daily(morning_readiness, time=datetime.time(6, 30, 0, tzinfo=KST), name="morning_readiness")
     # ③ 주간 리포트 — 매주 월요일 09:00 KST
