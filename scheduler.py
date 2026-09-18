@@ -237,7 +237,9 @@ async def check_new_runs(context: CallbackContext) -> None:
         )
 
         try:
-            analysis = _coach.chat(
+            # chat() 은 (응답, 스펙) 을 돌려준다. 스펙이 필요한 곳은 자유대화 핸들러뿐이라
+            # 여기서는 응답만 꺼낸다 — 그냥 쓰면 문자열 이어붙이기에서 TypeError 가 난다.
+            analysis, _ = _coach.chat(
                 f"{time_label} {run_date_str}({run_wd}) {dist_km:.1f}km 런을 {an.format_pace(pace_sec)} 페이스로 완료했어. "
                 f"평균심박 {round(avg_hr)}bpm. 이 런을 짧게 분석해주고 다음 훈련 한 줄만 처방해줘.",
                 cached,

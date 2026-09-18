@@ -353,8 +353,12 @@ class RunningCoach:
         user_message: str,
         activities: list[dict],
         wellness: list[dict],
-    ) -> str:
-        """사용자 메시지 → 코치 응답. 대화 히스토리 자동 관리."""
+    ) -> tuple[str, dict | None]:
+        """사용자 메시지 → (코치 응답, 제안된 스펙 또는 None). 대화 히스토리 자동 관리.
+
+        ★튜플을 반환한다.★ 스펙이 필요한 곳은 자유대화 핸들러 하나뿐이고, 나머지 호출부는
+        아래 래퍼들처럼 [0] 으로 응답만 꺼내 쓴다. 그냥 넘기면 튜플이 그대로 사용자에게 나간다.
+        """
         mem = load_memory()
         fitness_ctx = build_fitness_context(activities, wellness)
         system = _system_prompt(fitness_ctx, mem)
@@ -394,7 +398,7 @@ class RunningCoach:
             f"오늘({date_str}) 훈련 처방을 내려줘. 현재 피트니스 상태와 컨디션을 보고 구체적인 워크아웃을 제시해줘.",
             activities,
             wellness,
-        )
+        )[0]
 
     def analyze_last_run(self, activities: list[dict], wellness: list[dict]) -> str:
         """마지막 러닝 분석."""
@@ -406,7 +410,7 @@ class RunningCoach:
             f"심박 {last['avg_hr']}bpm)을 분석해줘. 잘한 점, 개선점, 다음 훈련에 반영할 점을 알려줘.",
             activities,
             wellness,
-        )
+        )[0]
 
     def weekly_plan(self, activities: list[dict], wellness: list[dict]) -> str:
         """이번 주 훈련 계획."""
@@ -414,7 +418,7 @@ class RunningCoach:
             "이번 주 훈련 계획을 요일별로 짜줘. 목적(E/T/인터벌/롱런/휴식)과 구체적 워크아웃을 포함해줘.",
             activities,
             wellness,
-        )
+        )[0]
 
     def status_report(self, activities: list[dict], wellness: list[dict]) -> str:
         """현재 피트니스 상태 리포트."""
