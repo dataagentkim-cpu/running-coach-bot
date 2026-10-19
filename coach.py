@@ -181,6 +181,9 @@ def build_fitness_context(activities: list[dict], wellness: list[dict]) -> str:
     KST = pytz.timezone("Asia/Seoul")
     today_kst = datetime.now(KST).date()
     hr_zones = load_hr_zones()
+    from garmin_client import load_laps
+    from hr_structure import hr_structure_lines
+    laps_cache = load_laps()
 
     vdot = an.best_vdot_from_activities(activities)
     load_series = an.daily_load_series(activities, days=90)
@@ -229,9 +232,12 @@ def build_fitness_context(activities: list[dict], wellness: list[dict]) -> str:
                 zsum = _zone_summary(act_zones)
                 if zsum:
                     result.append(f"    └ {zsum}")
-                pva = _plan_vs_actual(spec_for_date(d.strftime("%Y-%m-%d")) or {}, act_zones)
+                spec = spec_for_date(d.strftime("%Y-%m-%d")) or {}
+                pva = _plan_vs_actual(spec, act_zones)
                 if pva:
                     result.append(f"    └ {pva}")
+                for hl in hr_structure_lines(laps_cache.get(str(act.get("activityId")), []), spec):
+                    result.append(f"    └ {hl}")
         return result
 
     this_week_lines = _acts_in_range(week_start, today_kst)
@@ -333,7 +339,11 @@ def _system_prompt(fitness_ctx: str, mem: dict) -> str:
 8. 러닝 아래 `└ 계획 고강도 .. / 실제 Z4+ ..` 라인이 있으면, 그게 지난 처방이 실제로 어떻게
    수행됐는지다. 다음 처방의 강도 보정에 반영해라 — 실제가 계획보다 크게 넘쳤으면 줄이고,
    크게 못 미쳤으면 구간 길이나 목표를 다시 봐라.
-9. 세션을 시계로 보낼 만한 형태로 제안할 때는 propose_workout 도구를 함께 써라. 설명은 평소대로
+9. 러닝 아래 `└ 인터벌 ..회` / `반복 페이스` / `반복 피크심박` / `회복구간 평균심박` 줄이 있으면 그 런은
+   ★평균심박으로 판단하지 마라★ — 회복 구간이 섞여 낮게 나온다. 반복별로 봐라: 계획 대비 완수,
+   반복 간 페이스 편차(정지 * 표시 포함), 피크심박이 반복마다 오르는지(피로 누적), 회복구간 심박이
+   충분히 내려가는지. `└ 전반 .. → 후반 .., 디커플링` 줄이 있으면 지속주의 후반 버팀을 그걸로 봐라.
+10. 세션을 시계로 보낼 만한 형태로 제안할 때는 propose_workout 도구를 함께 써라. 설명은 평소대로
    하고, 도구에는 그 설명과 같은 내용을 구조로 담아라. 도구를 썼다고 바로 업로드되지 않는다 —
    사용자가 버튼으로 확인한다.
 

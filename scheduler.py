@@ -129,8 +129,10 @@ from garmin_client import (
     garmin_gate_status,
     load_activities,
     last_sync_time,
+    load_laps,
     load_seen_ids,
     load_wellness,
+    save_laps,
     save_seen_ids,
     _save,
 )
@@ -208,6 +210,17 @@ async def check_new_runs(context: CallbackContext) -> None:
 
     wellness = load_wellness()
 
+    # 랩 구조 — 새 런 1건당 호출 1회. 인터벌은 평균심박이 회복 구간과 섞여 뭉개지므로
+    # 반복별 피크·회복·완수를 봐야 한다. 실패해도 분석은 평균값으로 계속한다.
+    laps_cache = load_laps()
+    for run in new_runs:
+        key = str(run.get("activityId"))
+        if key not in laps_cache:
+            laps = client.fetch_laps(run["activityId"])
+            if laps:
+                laps_cache[key] = laps
+    save_laps(laps_cache)
+
     for run in new_runs:
         dist_km = (run.get("distance") or 0) / 1000
         dur_sec = run.get("duration") or run.get("movingDuration") or 0
@@ -228,12 +241,22 @@ async def check_new_runs(context: CallbackContext) -> None:
             f"심박 {round(avg_hr)}bpm | 시간 {round(dur_sec/60)}분\n\n"
         )
 
+        from coach import spec_for_date
+        from hr_structure import hr_structure_lines
+        hr_lines = hr_structure_lines(
+            laps_cache.get(str(run.get("activityId")), []),
+            spec_for_date(run_dt.strftime("%Y-%m-%d")),
+        )
+        hr_note = ("\n심박 구조:\n" + "\n".join(f"- {l}" for l in hr_lines)) if hr_lines else ""
+
         try:
             # chat() 은 (응답, 스펙) 을 돌려준다. 스펙이 필요한 곳은 자유대화 핸들러뿐이라
             # 여기서는 응답만 꺼낸다 — 그냥 쓰면 문자열 이어붙이기에서 TypeError 가 난다.
             analysis, _ = _coach.chat(
                 f"{time_label} {run_date_str}({run_wd}) {dist_km:.1f}km 런을 {an.format_pace(pace_sec)} 페이스로 완료했어. "
-                f"평균심박 {round(avg_hr)}bpm. 이 런을 짧게 분석해주고 다음 훈련 한 줄만 처방해줘.",
+                f"평균심박 {round(avg_hr)}bpm.{hr_note}\n"
+                f"평균심박만 보지 말고 심박 구조가 있으면 그걸로 런 전체를 판단해서 "
+                f"짧게 분석해주고 다음 훈련 한 줄만 처방해줘.",
                 cached,
                 wellness,
             )

@@ -288,6 +288,17 @@ class GarminClient:
             log.warning("quick_check 실패: %s", e)
             return []
 
+    def fetch_laps(self, activity_id: int | str) -> list[dict]:
+        """런 1건의 랩(숫자만). 새 런 감지 때 1회만 부른다 — 실패하면 빈 목록."""
+        from hr_structure import compact_laps
+        if not self.api:
+            self.connect()
+        try:
+            return compact_laps(self.api.get_activity_splits(activity_id))
+        except Exception as e:
+            log.warning("랩 조회 실패 (%s): %s", activity_id, e)
+            return []
+
     def upload_workout(self, workout) -> dict:
         """RunningWorkout 업로드. 반환은 Garmin 응답 dict(workoutId 포함)."""
         if not self.api:
@@ -408,6 +419,15 @@ def load_hr_zones() -> dict:
 
 def save_hr_zones(zones: dict) -> None:
     _save(DATA_DIR / "hr_zones.json", zones)
+
+
+def load_laps() -> dict:
+    """activityId(str) → compact 랩 목록. sync 덮어쓰기와 무관하게 별도 보관."""
+    return _load(DATA_DIR / "laps.json", {})
+
+
+def save_laps(laps: dict) -> None:
+    _save(DATA_DIR / "laps.json", laps)
 
 
 # ★activities.json 과 반드시 분리한다.★ sync(weeks=10) 이 activities.json 을 통째로
