@@ -430,6 +430,15 @@ def save_laps(laps: dict) -> None:
     _save(DATA_DIR / "laps.json", laps)
 
 
+def load_vo2max_history() -> dict:
+    """날짜(YYYY-MM-DD) → Garmin VO2max. 활동 캐시(10주)보다 오래 남긴다."""
+    return _load(DATA_DIR / "vo2max_history.json", {})
+
+
+def save_vo2max_history(h: dict) -> None:
+    _save(DATA_DIR / "vo2max_history.json", h)
+
+
 _STREAMS_KEEP = 60   # 최근 60런 — 런당 수십 KB
 
 

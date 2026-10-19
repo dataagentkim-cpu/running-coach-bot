@@ -132,8 +132,10 @@ from garmin_client import (
     load_laps,
     load_seen_ids,
     load_streams,
+    load_vo2max_history,
     load_wellness,
     save_streams,
+    save_vo2max_history,
     save_seen_ids,
     _save,
 )
@@ -400,9 +402,14 @@ async def weekly_report(context: CallbackContext) -> None:
             f"  평균 심박: {last_week['avg_hr']}bpm\n\n"
         )
 
+    vo2_hist = an.merge_vo2max_history(acts, load_vo2max_history())
+    save_vo2max_history(vo2_hist)
+    vo2_line = an.vo2max_trend_line(vo2_hist)
+
     fitness_str = (
         f"📈 현재 피트니스\n"
-        f"  VDOT {vdot:.1f} | CTL {ctl:.0f} | TSB {tsb:+.0f}\n\n"
+        + (f"  {vo2_line}\n" if vo2_line else "")
+        + f"  VDOT {vdot:.1f} | CTL {ctl:.0f} | TSB {tsb:+.0f}\n\n"
     )
 
     try:

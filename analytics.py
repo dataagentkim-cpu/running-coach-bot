@@ -272,3 +272,49 @@ def last_run_summary(activities: list[dict]) -> dict | None:
         "training_load": act.get("activityTrainingLoad") or act.get("trainingLoad"),
         "aerobic_te": act.get("aerobicTrainingEffect"),
     }
+
+
+# ── VO2max 추이 ─────────────────────────────────────────────────────────────
+
+def merge_vo2max_history(activities: list[dict], history: dict) -> dict:
+    """활동에 붙은 Garmin VO2max 를 날짜(KST)별로 이력에 합친다. 같은 날은 마지막 런 값.
+
+    ★활동 캐시는 최근 10주만 남는다★ — 이력을 따로 쌓지 않으면 석 달 전 값이 사라진다.
+    """
+    out = dict(history or {})
+    for act in sorted(activities, key=lambda a: a.get("beginTimestamp") or 0):
+        v = act.get("vO2MaxValue")
+        d = _ts_to_kst_date(act.get("beginTimestamp") or act.get("startTimeGMT"))
+        if v and d and float(v) > 20:
+            out[d] = float(v)
+    return dict(sorted(out.items()))
+
+
+def vo2max_trend_line(history: dict, today=None) -> str:
+    """'VO2max 47 (9/24) | 4주 전 46 (+1) | 12주 전 47 (±0)' 형태. 이력이 없으면 빈 문자열."""
+    if not history:
+        return ""
+    today = today or _now_kst().date()
+    items = [(datetime.strptime(d, "%Y-%m-%d").date(), v) for d, v in sorted(history.items())]
+    last_d, last_v = items[-1]
+
+    def at(weeks):
+        """그 시점 이전의 마지막 값."""
+        cut = today - timedelta(weeks=weeks)
+        prior = [v for d, v in items if d <= cut]
+        return prior[-1] if prior else None
+
+    def fmt(v):
+        return f"{v:.0f}" if float(v).is_integer() else f"{v:.1f}"
+
+    parts = [f"VO2max {fmt(last_v)} ({last_d.month}/{last_d.day} 기준)"]
+    for w in (4, 12):
+        p = at(w)
+        if p is not None:
+            diff = last_v - p
+            parts.append(f"{w}주 전 {fmt(p)} ({'±0' if diff == 0 else f'{diff:+g}'})")
+    line = " | ".join(parts)
+    stale = (today - last_d).days // 7
+    if stale >= 2:
+        line += f"\n  ※ {stale}주째 갱신 없음 — Garmin 이 값을 새로 붙인 런이 없다. 시계 표시값과 다를 수 있다"
+    return line
