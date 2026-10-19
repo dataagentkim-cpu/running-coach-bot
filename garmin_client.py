@@ -172,8 +172,11 @@ class GarminClient:
         password = os.getenv("GARMIN_PASSWORD", "")
 
         # ① 클라우드: GARMIN_TOKEN_B64 환경변수로 토큰 복원
+        #    ★디스크 토큰이 이미 있으면 덮어쓰지 않는다★ — env 토큰은 최초 시드용이다.
+        #    매 폴링마다 덮어쓰면 재로그인으로 받은 새 토큰이 옛 토큰으로 되돌아가
+        #    "토큰 실패 → 재로그인" 이 쿨다운마다 반복된다 (2026-10-19 확인).
         token_b64 = os.getenv("GARMIN_TOKEN_B64", "")
-        if token_b64:
+        if token_b64 and not (GARTH_HOME / "garmin_tokens.json").exists():
             token_json = base64.b64decode(token_b64).decode()
             GARTH_HOME.mkdir(exist_ok=True)
             (GARTH_HOME / "garmin_tokens.json").write_text(token_json)
