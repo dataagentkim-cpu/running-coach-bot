@@ -131,8 +131,9 @@ from garmin_client import (
     last_sync_time,
     load_laps,
     load_seen_ids,
+    load_streams,
     load_wellness,
-    save_laps,
+    save_streams,
     save_seen_ids,
     _save,
 )
@@ -210,16 +211,17 @@ async def check_new_runs(context: CallbackContext) -> None:
 
     wellness = load_wellness()
 
-    # 랩 구조 — 새 런 1건당 호출 1회. 인터벌은 평균심박이 회복 구간과 섞여 뭉개지므로
-    # 반복별 피크·회복·완수를 봐야 한다. 실패해도 분석은 평균값으로 계속한다.
-    laps_cache = load_laps()
+    # 초 단위 기록 — 새 런 1건당 호출 1회. 워크아웃이든 즉흥 런이든 기록 자체에서 질주·템포·회복을
+    # 찾는다. 평균심박은 이걸 다 뭉갠다. 실패해도 분석은 평균값으로 계속한다.
+    streams = load_streams()
     for run in new_runs:
         key = str(run.get("activityId"))
-        if key not in laps_cache:
-            laps = client.fetch_laps(run["activityId"])
-            if laps:
-                laps_cache[key] = laps
-    save_laps(laps_cache)
+        if key not in streams:
+            st = client.fetch_stream(run["activityId"])
+            if st:
+                streams[key] = st
+    save_streams(streams)
+    laps_cache = load_laps()
 
     for run in new_runs:
         dist_km = (run.get("distance") or 0) / 1000
@@ -241,11 +243,9 @@ async def check_new_runs(context: CallbackContext) -> None:
             f"심박 {round(avg_hr)}bpm | 시간 {round(dur_sec/60)}분\n\n"
         )
 
-        from coach import spec_for_date
-        from hr_structure import hr_structure_lines
-        hr_lines = hr_structure_lines(
-            laps_cache.get(str(run.get("activityId")), []),
-            spec_for_date(run_dt.strftime("%Y-%m-%d")),
+        from coach import hr_lines_for, spec_for_date
+        hr_lines = hr_lines_for(
+            run, streams, laps_cache, spec_for_date(run_dt.strftime("%Y-%m-%d"))
         )
         hr_note = ("\n심박 구조:\n" + "\n".join(f"- {l}" for l in hr_lines)) if hr_lines else ""
 

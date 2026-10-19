@@ -288,15 +288,15 @@ class GarminClient:
             log.warning("quick_check 실패: %s", e)
             return []
 
-    def fetch_laps(self, activity_id: int | str) -> list[dict]:
-        """런 1건의 랩(숫자만). 새 런 감지 때 1회만 부른다 — 실패하면 빈 목록."""
-        from hr_structure import compact_laps
+    def fetch_stream(self, activity_id: int | str) -> list[list[float]]:
+        """런 1건의 초 단위 기록(5초 간격, 숫자만). 새 런 감지 때 1회만 부른다 — 실패하면 빈 목록."""
+        from hr_flow import compact_stream
         if not self.api:
             self.connect()
         try:
-            return compact_laps(self.api.get_activity_splits(activity_id))
+            return compact_stream(self.api.get_activity_details(activity_id, maxchart=2000, maxpoly=0))
         except Exception as e:
-            log.warning("랩 조회 실패 (%s): %s", activity_id, e)
+            log.warning("기록 조회 실패 (%s): %s", activity_id, e)
             return []
 
     def upload_workout(self, workout) -> dict:
@@ -428,6 +428,19 @@ def load_laps() -> dict:
 
 def save_laps(laps: dict) -> None:
     _save(DATA_DIR / "laps.json", laps)
+
+
+_STREAMS_KEEP = 60   # 최근 60런 — 런당 수십 KB
+
+
+def load_streams() -> dict:
+    """activityId(str) → compact 기록. sync 덮어쓰기와 무관하게 별도 보관."""
+    return _load(DATA_DIR / "hr_streams.json", {})
+
+
+def save_streams(streams: dict) -> None:
+    keys = list(streams)[-_STREAMS_KEEP:]
+    _save(DATA_DIR / "hr_streams.json", {k: streams[k] for k in keys})
 
 
 # ★activities.json 과 반드시 분리한다.★ sync(weeks=10) 이 activities.json 을 통째로

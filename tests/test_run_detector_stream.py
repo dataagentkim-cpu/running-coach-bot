@@ -1,10 +1,10 @@
-"""새 런 감지 → 랩 1회 조회 → 심박 구조가 코치 프롬프트에 실린다."""
+"""새 런 감지 → 기록 1회 조회 → 심박 흐름이 코치 프롬프트에 실린다."""
 import asyncio
 import time
 
 import garmin_client
 import scheduler
-from tests.test_hr_structure import INTERVAL
+from tests.test_hr_flow import FREE_INTERVAL
 
 
 class _FakeClient:
@@ -15,9 +15,9 @@ class _FakeClient:
                  "activityName": "RC-test", "distance": 4000, "duration": 1800,
                  "averageHR": 137, "beginTimestamp": time.time() * 1000}]
 
-    def fetch_laps(self, aid):
+    def fetch_stream(self, aid):
         _FakeClient.calls.append(aid)
-        return INTERVAL
+        return FREE_INTERVAL
 
 
 class _FakeCoach:
@@ -43,13 +43,13 @@ def _run(monkeypatch, tmp_path):
     return sent
 
 
-def test_new_run_fetches_laps_once_and_feeds_prompt(monkeypatch, tmp_path):
+def test_new_run_fetches_stream_once_and_feeds_prompt(monkeypatch, tmp_path):
     _FakeClient.calls.clear(); _FakeCoach.prompts.clear()
     sent = _run(monkeypatch, tmp_path)
     assert _FakeClient.calls == [111]
-    assert sent and "인터벌 5회" in _FakeCoach.prompts[0]
-    assert "반복 피크심박: 174" in _FakeCoach.prompts[0]
-    assert garmin_client.load_laps()["111"] == INTERVAL
+    assert sent and "흐름: 워밍업 10분 → 질주 6회" in _FakeCoach.prompts[0]
+    assert "템포 " in _FakeCoach.prompts[0]
+    assert garmin_client.load_streams()["111"] == FREE_INTERVAL
 
 
 def test_seen_run_does_not_refetch(monkeypatch, tmp_path):

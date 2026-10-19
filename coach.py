@@ -173,6 +173,16 @@ def spec_for_date(date_str: str) -> dict | None:
     return None
 
 
+def hr_lines_for(act: dict, streams: dict, laps: dict, spec: dict | None) -> list[str]:
+    """런 1건의 심박 흐름 줄. 초 단위 기록 우선, 없으면 예전 랩 캐시, 둘 다 없으면 빈 목록."""
+    from hr_flow import flow_lines
+    from hr_structure import hr_structure_lines, planned_reps
+    key = str(act.get("activityId"))
+    if streams.get(key):
+        return flow_lines(streams[key], planned_reps(spec))
+    return hr_structure_lines(laps.get(key, []), spec)
+
+
 def build_fitness_context(activities: list[dict], wellness: list[dict]) -> str:
     """현재 피트니스 상태를 코치 프롬프트용 텍스트로 변환."""
     import pytz
@@ -181,9 +191,9 @@ def build_fitness_context(activities: list[dict], wellness: list[dict]) -> str:
     KST = pytz.timezone("Asia/Seoul")
     today_kst = datetime.now(KST).date()
     hr_zones = load_hr_zones()
-    from garmin_client import load_laps
-    from hr_structure import hr_structure_lines
+    from garmin_client import load_laps, load_streams
     laps_cache = load_laps()
+    streams = load_streams()
 
     vdot = an.best_vdot_from_activities(activities)
     load_series = an.daily_load_series(activities, days=90)
@@ -236,7 +246,7 @@ def build_fitness_context(activities: list[dict], wellness: list[dict]) -> str:
                 pva = _plan_vs_actual(spec, act_zones)
                 if pva:
                     result.append(f"    └ {pva}")
-                for hl in hr_structure_lines(laps_cache.get(str(act.get("activityId")), []), spec):
+                for hl in hr_lines_for(act, streams, laps_cache, spec):
                     result.append(f"    └ {hl}")
         return result
 
@@ -339,10 +349,12 @@ def _system_prompt(fitness_ctx: str, mem: dict) -> str:
 8. 러닝 아래 `└ 계획 고강도 .. / 실제 Z4+ ..` 라인이 있으면, 그게 지난 처방이 실제로 어떻게
    수행됐는지다. 다음 처방의 강도 보정에 반영해라 — 실제가 계획보다 크게 넘쳤으면 줄이고,
    크게 못 미쳤으면 구간 길이나 목표를 다시 봐라.
-9. 러닝 아래 `└ 인터벌 ..회` / `반복 페이스` / `반복 피크심박` / `회복구간 평균심박` 줄이 있으면 그 런은
-   ★평균심박으로 판단하지 마라★ — 회복 구간이 섞여 낮게 나온다. 반복별로 봐라: 계획 대비 완수,
-   반복 간 페이스 편차(정지 * 표시 포함), 피크심박이 반복마다 오르는지(피로 누적), 회복구간 심박이
-   충분히 내려가는지. `└ 전반 .. → 후반 .., 디커플링` 줄이 있으면 지속주의 후반 버팀을 그걸로 봐라.
+9. 러닝 아래 `└ 흐름:` / `질주(...)` / `템포 ..분: 심박 ..` / `최고심박` 줄이 있으면 그게 런 전체의 심박 흐름이다
+   (워크아웃이든 즉흥 런이든 기록에서 직접 찾은 것). 그 런은 ★평균심박으로 판단하지 마라★ — 회복·워밍업이
+   섞여 낮게 나온다. 봐야 할 것: 질주마다 피크심박이 오르는지(피로 누적), 1분 뒤 심박이 충분히
+   떨어지는지(회복력 — 10 이상 떨어지면 양호, 거의 안 떨어지거나 오르면 강도 과다), 템포에서 페이스는
+   같은데 심박이 오르는지(지속력 한계), 계획 대비 질주 횟수. `고른 페이스: .. 디커플링` 줄은 지속주의
+   후반 버팀이다. (예전 런에는 `반복 페이스/반복 피크심박` 랩 기반 줄이 있을 수 있다 — 같은 방식으로 읽어라.)
 10. 세션을 시계로 보낼 만한 형태로 제안할 때는 propose_workout 도구를 함께 써라. 설명은 평소대로
    하고, 도구에는 그 설명과 같은 내용을 구조로 담아라. 도구를 썼다고 바로 업로드되지 않는다 —
    사용자가 버튼으로 확인한다.
