@@ -22,22 +22,29 @@ _YEOUIDO_LAT = 37.5218
 _YEOUIDO_LON = 126.9245
 
 
-def _fetch_kospi_futures() -> str:
-    """코스피200 선물(야간) 시세 조회 — 네이버 폴링 API."""
+def _fetch_us_stock(code: str, label: str) -> str:
+    """미국 종목 간밤 정규장 종가 + 시간외 시세 — 네이버 해외주식 API."""
     try:
-        url = 'https://polling.finance.naver.com/api/realtime?query=SERVICE_INDEX:KPI200'
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.naver.com/'})
+        url = f'https://api.stock.naver.com/stock/{code}/basic'
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://m.stock.naver.com/'})
         with urllib.request.urlopen(req, timeout=5) as r:
-            data = _json.loads(r.read())
-        d = data['result']['areas'][0]['datas'][0]
-        price = d['nv'] / 100
-        chg = d['cv'] / 100
-        chg_pct = d['cr']
-        arrow = "▲" if d['rf'] == '2' else "▼"
+            d = _json.loads(r.read())
+        price = float(d['closePrice'].replace(',', ''))
+        chg = float(d['compareToPreviousClosePrice'].replace(',', ''))
+        chg_pct = float(d['fluctuationsRatio'])
+        arrow = "▲" if chg >= 0 else "▼"
         sign = "+" if chg >= 0 else ""
-        return f"📈 코스피200 선물: {price:.2f} {arrow}{sign}{chg:.2f} ({sign}{chg_pct:.2f}%)"
+        line = f"{label}: ${price:,.2f} {arrow}{sign}{chg:.2f} ({sign}{chg_pct:.2f}%)"
+        over = d.get('overMarketPriceInfo') or {}
+        if over.get('overPrice'):
+            o_price = float(over['overPrice'].replace(',', ''))
+            o_pct = float(over['fluctuationsRatio'])
+            o_sign = "+" if o_pct >= 0 else ""
+            session = "시간외" if over.get('tradingSessionType') == 'AFTER_MARKET' else "프리장"
+            line += f" | {session} ${o_price:,.2f} ({o_sign}{o_pct:.2f}%)"
+        return line
     except Exception as e:
-        log.warning("코스피 선물 조회 실패: %s", e)
+        log.warning("%s 시세 조회 실패: %s", code, e)
         return ""
 
 
@@ -100,13 +107,19 @@ def _fetch_weather() -> str:
         h_code = hourly.get("weathercode", [])
         commute_rain = sum(
             h_rain[i] for i, t in enumerate(h_times)
-            if "T07" <= t[-5:] <= "T09" and i < len(h_rain)
+            if "07" <= t[11:13] <= "09" and i < len(h_rain)
         )
         commute_bad = any(
             h_code[i] >= 51 for i, t in enumerate(h_times)
-            if "T07" <= t[-5:] <= "T09" and i < len(h_code)
+            if "07" <= t[11:13] <= "09" and i < len(h_code)
         )
-        umbrella = "☂️ 우산 챙겨요 (출근길 강수 예보)" if (commute_rain > 0.1 or commute_bad) else "☀️ 우산 불필요"
+        raining_now = (cur.get("precipitation") or 0) > 0 or code >= 51
+        if raining_now:
+            umbrella = "☂️ 우산 챙겨요 (지금 비 오는 중)"
+        elif commute_rain > 0.1 or commute_bad:
+            umbrella = "☂️ 우산 챙겨요 (출근길 강수 예보)"
+        else:
+            umbrella = "☀️ 우산 불필요"
 
         range_str = f" | 최고 {t_max}° / 최저 {t_min}°" if t_max is not None else ""
         rain_str = f" | 강수 {rain_total}mm" if rain_total > 0 else ""
@@ -322,12 +335,16 @@ async def morning_readiness(context: CallbackContext) -> None:
     lines = [f"🌅 굿모닝! {date_str} 레디니스 체크\n"]
 
     weather = _fetch_weather()
-    kospi = _fetch_kospi_futures()
+    # 간밤 미국장 결과 — 한국장 분위기는 코스피 야간선물 대신 EWY(미국 상장 한국 ETF)로 본다
+    ewy = _fetch_us_stock("EWY", "🇰🇷 EWY(한국 ETF)")
+    micron = _fetch_us_stock("MU.O", "💾 마이크론")
     if weather:
         lines.append(weather)
-    if kospi:
-        lines.append(kospi)
-    if weather or kospi:
+    if ewy:
+        lines.append(ewy)
+    if micron:
+        lines.append(micron)
+    if weather or ewy or micron:
         lines.append("")
 
     if bb:
