@@ -16,6 +16,8 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s | %(message)s",
 )
 log = logging.getLogger("runcoach")
+# httpx 는 요청마다 URL 을 INFO 로 찍는데, 텔레그램 API URL 에는 봇 토큰이 들어 있다
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def cmd_sync(weeks: int) -> None:
